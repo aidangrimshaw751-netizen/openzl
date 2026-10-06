@@ -2,9 +2,32 @@
 
 import {createWebToolConfig} from '../vite.base.ts';
 import {fileURLToPath} from 'node:url';
+import type {Plugin} from 'vite';
+
+// index.html carries the production CSP. The dev server additionally needs the
+// inline React Refresh preamble from @vitejs/plugin-react and the HMR websocket.
+const DEV_CSP_SOURCES: [directive: string, source: string][] = [
+  ["script-src 'self'", "'unsafe-inline'"],
+  ["connect-src 'self'", 'ws://localhost:*'],
+];
+
+const devContentSecurityPolicy: Plugin = {
+  name: 'dev-content-security-policy',
+  apply: 'serve',
+  transformIndexHtml(html) {
+    for (const [directive, source] of DEV_CSP_SOURCES) {
+      if (!html.includes(directive)) {
+        throw new Error(`index.html Content-Security-Policy is missing "${directive}"`);
+      }
+      html = html.replace(directive, `${directive} ${source}`);
+    }
+    return html;
+  },
+};
 
 const config = createWebToolConfig({
   base: '/tools/playground',
+  plugins: [devContentSecurityPolicy],
   testAlias: [
     {
       find: /^\/OpenZL_logo\.png/,
