@@ -2,7 +2,7 @@
 
 import {useCallback, useEffect, useState} from 'react';
 import {Box, Flex} from '@chakra-ui/react';
-import {Banner, ToolHeader} from '@openzl/web-common';
+import {ToolHeader} from '@openzl/web-common';
 import ResultsPanel from './components/ResultsPanel.tsx';
 import SetupColumn from './components/SetupColumn.tsx';
 import UnsupportedBrowser from './components/UnsupportedBrowser.tsx';
@@ -139,36 +139,28 @@ function Playground() {
   useBlockStrayFileDrops();
 
   return (
-    <>
-      {/* The docs site publishes every land, so the page is reachable while
-          parts of it are still stubs. It runs now; what it shows afterwards
-          is the placeholder below. */}
-      <Box width="100%" maxW={CONTENT_MAX_WIDTH} px={CONTENT_PADDING_X} pt="24px">
-        <Banner>Work in progress — the results view is a placeholder</Banner>
-      </Box>
-      <Flex
-        align="flex-start"
-        gap="24px"
-        width="100%"
-        maxW={CONTENT_MAX_WIDTH}
-        px={CONTENT_PADDING_X}
-        pt="24px"
-        pb="40px"
-        direction={{base: 'column', lg: 'row'}}>
-        <SetupColumn
-          file={file}
-          onFileChange={setFile}
-          compressors={compressors}
-          iterations={iterations}
-          onIterationsChange={setIterations}
-          runConfig={runConfig}
-          runState={runState}
-          onRun={onRun}
-          onTrySample={null}
-          runBlockers={runBlockers}
-        />
-        <ResultsPanel runState={runState} />
-      </Flex>
-    </>
+    <Flex
+      align="flex-start"
+      gap="24px"
+      width="100%"
+      maxW={CONTENT_MAX_WIDTH}
+      px={CONTENT_PADDING_X}
+      pt="24px"
+      pb="40px"
+      direction={{base: 'column', lg: 'row'}}>
+      <SetupColumn
+        file={file}
+        onFileChange={setFile}
+        compressors={compressors}
+        iterations={iterations}
+        onIterationsChange={setIterations}
+        runConfig={runConfig}
+        runState={runState}
+        onRun={onRun}
+        onTrySample={null}
+        runBlockers={runBlockers}
+      />
+      <ResultsPanel runState={runState} />
+    </Flex>
   );
 }
