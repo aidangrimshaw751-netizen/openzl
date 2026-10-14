@@ -2,8 +2,8 @@
 
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import {describe, it, expect, afterEach} from 'vitest';
-import {render, screen, cleanup, fireEvent, within, waitFor, type RenderOptions} from '@testing-library/react';
+import {describe, it, expect, afterEach, beforeEach, vi} from 'vitest';
+import {act, render, screen, cleanup, fireEvent, within, waitFor, type RenderOptions} from '@testing-library/react';
 import {ChakraProvider} from '@chakra-ui/react';
 import React from 'react';
 import App from '../src/App.tsx';
@@ -16,11 +16,35 @@ function renderWithPlaygroundTheme(ui: React.ReactElement, options?: Omit<Render
   });
 }
 
+/**
+ * Stands in for the engine so which branch App renders is a property of the
+ * test rather than of the Node version running it: Node 24 supports Memory64,
+ * so the real `validate` would always take the supported path.
+ */
+function stubWebAssembly(acceptsMemory64: boolean) {
+  vi.stubGlobal('WebAssembly', {validate: () => acceptsMemory64});
+}
+
+/** jsdom does not report the page as cross-origin isolated, so threads would read as missing. */
+function stubIsolation(isolated: boolean) {
+  vi.stubGlobal('SharedArrayBuffer', ArrayBuffer);
+  vi.stubGlobal('crossOriginIsolated', isolated);
+}
+
+beforeEach(() => {
+  stubIsolation(true);
+});
+
+// Unmount the rendered tree after each test so the DOM doesn't accumulate
+// across tests (which would make queries match duplicate elements).
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
 describe('Compression Playground', () => {
-  // Unmount the rendered tree after each test so the DOM doesn't accumulate
-  // across tests (which would make queries match duplicate elements).
-  afterEach(() => {
-    cleanup();
+  beforeEach(() => {
+    stubWebAssembly(true);
   });
 
   it('renders the shared header', () => {
@@ -108,5 +132,107 @@ describe('Compression Playground', () => {
     expect(screen.getByText(/What the charts say/)).toBeInTheDocument();
     expect(screen.getByText(/Train an OpenZL compressor/)).toBeInTheDocument();
     expect(screen.getByText('Get large files? Use the desktop app.')).toBeInTheDocument();
+  });
+
+  it('does not show the unsupported-browser message', () => {
+    renderWithPlaygroundTheme(<App />);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+});
+
+describe('on a browser that cannot load the module', () => {
+  it('names the missing feature and links to the support table', () => {
+    // Safari's failure mode: WebAssembly is present, Memory64 is not.
+    stubWebAssembly(false);
+    renderWithPlaygroundTheme(<App />);
+
+    expect(screen.getByRole('heading', {level: 2, name: /Your browser can.t run the playground/})).toBeInTheDocument();
+    expect(screen.getByText(/needs 64-bit WebAssembly memory, which this browser doesn.t have/)).toBeInTheDocument();
+    expect(screen.getByRole('link', {name: /which browsers support it/})).toHaveAttribute(
+      'href',
+      'https://caniuse.com/wf-wasm-memory64',
+    );
+    expect(screen.getByText(/Chrome 133\+, Edge 133\+ and Firefox 134\+ can run it/)).toBeInTheDocument();
+    // Every iOS browser is WebKit, so naming Chrome there would only send an
+    // iPhone user back to this screen.
+    expect(screen.getByText(/except on iPhone and iPad, where every browser uses Safari.s engine/)).toBeInTheDocument();
+    expect(screen.getByText(/OpenZL Playground desktop app/)).toBeInTheDocument();
+  });
+
+  it('replaces the setup and results columns rather than sitting alongside them', () => {
+    stubWebAssembly(false);
+    renderWithPlaygroundTheme(<App />);
+
+    // The header is the only way off this screen, so it has to stay.
+    expect(screen.getByRole('heading', {level: 1, name: 'Compression Playground'})).toBeInTheDocument();
+    expect(screen.queryByRole('heading', {level: 2, name: 'Choose your data'})).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', {level: 2, name: 'Results'})).not.toBeInTheDocument();
+  });
+
+  it('does not blame Memory64 when WebAssembly is missing entirely', () => {
+    vi.stubGlobal('WebAssembly', undefined);
+    renderWithPlaygroundTheme(<App />);
+
+    expect(screen.getByText(/needs WebAssembly, which this browser doesn.t have/)).toBeInTheDocument();
+    expect(screen.queryByRole('link', {name: /which browsers support it/})).not.toBeInTheDocument();
+    expect(document.querySelector('a[href*="caniuse.com"]')).toBeNull();
+    // The recommendation is the actionable half, so it survives either browser blocker.
+    expect(screen.getByText(/Chrome 133\+, Edge 133\+ and Firefox 134\+ can run it/)).toBeInTheDocument();
+  });
+});
+
+describe('on a page that is not cross-origin isolated', () => {
+  beforeEach(() => {
+    stubWebAssembly(true);
+    stubIsolation(false);
+  });
+
+  it('says isolation did not take effect rather than blaming the browser', async () => {
+    renderWithPlaygroundTheme(<App />);
+
+    expect(
+      await screen.findByRole('heading', {level: 2, name: /The playground couldn.t start here/}),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/sets that up with a service worker, and it didn.t take effect/)).toBeInTheDocument();
+    expect(screen.queryByText(/Your browser can.t/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', {level: 2, name: 'Choose your data'})).not.toBeInTheDocument();
+  });
+
+  it('suggests a reload or a normal window instead of another browser', async () => {
+    // These are the states the worker gives up in: no service workers, as in
+    // some private windows, a failed registration, or an install that failed.
+    // A different browser is rarely the fix for any of them.
+    renderWithPlaygroundTheme(<App />);
+
+    expect(await screen.findByText(/Try reloading the page, or opening it in a normal window/)).toBeInTheDocument();
+    expect(screen.getByText(/OpenZL Playground desktop app works either way/)).toBeInTheDocument();
+    expect(screen.queryByText(/Chrome 133\+/)).not.toBeInTheDocument();
+    expect(document.querySelector('a[href*="caniuse.com"]')).toBeNull();
+  });
+
+  it('shows nothing while the isolation worker may still reload the page', async () => {
+    // A first visit: the worker has not reloaded the page isolated yet, and
+    // the blocked screen would otherwise flash up until it does.
+    let settle: () => void = () => undefined;
+    vi.stubGlobal(
+      'openzlIsolationSettled',
+      new Promise<void>((resolve) => {
+        settle = resolve;
+      }),
+    );
+    renderWithPlaygroundTheme(<App />);
+    // Lets a promise that had already resolved reach the page, so the checks
+    // below would catch an App that did not wait for this one.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.getByRole('heading', {level: 1, name: 'Compression Playground'})).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', {level: 2, name: 'Choose your data'})).not.toBeInTheDocument();
+
+    // The worker gave up without reloading, so the page stays unisolated.
+    settle();
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
   });
 });

@@ -5,8 +5,10 @@ import {Box, Flex} from '@chakra-ui/react';
 import {Banner, ToolHeader} from '@openzl/web-common';
 import ResultsPanel from './components/ResultsPanel.tsx';
 import SetupColumn from './components/SetupColumn.tsx';
+import UnsupportedBrowser from './components/UnsupportedBrowser.tsx';
 import {toCompressorConfig, type CompressorConfig, type RunConfig, type RunState} from './benchmarkTypes.ts';
 import {ITERATIONS_DEFAULT} from './compressors.ts';
+import {detectEngineSupport, engineBlocker, isolationSettled} from './engineSupport.ts';
 import {runBenchmark} from './runBenchmark.ts';
 import {useCompressorRows} from './useCompressorRows.ts';
 import logoUrl from '/OpenZL_logo.png?url';
@@ -19,6 +21,14 @@ import logoUrl from '/OpenZL_logo.png?url';
  */
 const CONTENT_MAX_WIDTH = '1590px';
 const CONTENT_PADDING_X = '64px';
+
+/**
+ * The blocked screen is a few sentences, so it does not use the full content
+ * width. At 1590px its text would run to well over 1400px a line, far past a
+ * comfortable measure, and the card would sit above most of a viewport of empty
+ * page.
+ */
+const MESSAGE_MAX_WIDTH = '640px';
 
 /**
  * Without this, a file released anywhere but the drop zone makes the browser
@@ -72,6 +82,43 @@ function runBlockersFor(file: File | null, compressors: readonly CompressorConfi
 }
 
 export default function App() {
+  // Lazy initializer rather than a call in the body: nothing detection reports
+  // can change while the page is open, so it should run once per mount rather
+  // than once per render.
+  const [support] = useState(detectEngineSupport);
+  const blocker = engineBlocker(support);
+  const [settled, setSettled] = useState(false);
+  useEffect(() => {
+    void isolationSettled().then(() => {
+      setSettled(true);
+    });
+  }, []);
+  // On a first visit the page is not isolated until the isolation worker
+  // reloads it, moments later. Showing `no-threads` before that would flash
+  // the blocked screen at every new visitor, and the playground cannot load
+  // either, so the main area stays empty until the worker has decided.
+  const awaitingIsolation = blocker === 'no-threads' && !settled;
+
+  return (
+    <Flex direction="column" minH="100vh" bg="pg.pageBg">
+      <ToolHeader title="Compression Playground" logoSrc={logoUrl} />
+      {/* The header stays up on the unsupported path. It is the site
+          navigation, and it is the only way off this screen. */}
+      <Flex as="main" flex="1" direction="column" align="center" bg="pg.pageBg">
+        {awaitingIsolation ? null : blocker === null ? (
+          <Playground />
+        ) : (
+          <Box width="100%" maxW={MESSAGE_MAX_WIDTH} px="32px" pt={{base: '32px', md: '96px'}} pb="40px">
+            <UnsupportedBrowser blocker={blocker} />
+          </Box>
+        )}
+      </Flex>
+    </Flex>
+  );
+}
+
+/** Owns the run setup, so none of it exists on the blocked path, where nothing could use it. */
+function Playground() {
   const [file, setFile] = useState<File | null>(null);
   const compressors = useCompressorRows();
   const [iterations, setIterations] = useState(ITERATIONS_DEFAULT);
@@ -92,39 +139,36 @@ export default function App() {
   useBlockStrayFileDrops();
 
   return (
-    <Flex direction="column" minH="100vh" bg="pg.pageBg">
-      <ToolHeader title="Compression Playground" logoSrc={logoUrl} />
-      <Flex as="main" flex="1" direction="column" align="center" bg="pg.pageBg">
-        {/* The docs site publishes every land, so the page is reachable while
-            parts of it are still stubs. It runs now; what it shows afterwards
-            is the placeholder below. */}
-        <Box width="100%" maxW={CONTENT_MAX_WIDTH} px={CONTENT_PADDING_X} pt="24px">
-          <Banner>Work in progress — the results view is a placeholder</Banner>
-        </Box>
-        <Flex
-          align="flex-start"
-          gap="24px"
-          width="100%"
-          maxW={CONTENT_MAX_WIDTH}
-          px={CONTENT_PADDING_X}
-          pt="24px"
-          pb="40px"
-          direction={{base: 'column', lg: 'row'}}>
-          <SetupColumn
-            file={file}
-            onFileChange={setFile}
-            compressors={compressors}
-            iterations={iterations}
-            onIterationsChange={setIterations}
-            runConfig={runConfig}
-            runState={runState}
-            onRun={onRun}
-            onTrySample={null}
-            runBlockers={runBlockers}
-          />
-          <ResultsPanel runState={runState} />
-        </Flex>
+    <>
+      {/* The docs site publishes every land, so the page is reachable while
+          parts of it are still stubs. It runs now; what it shows afterwards
+          is the placeholder below. */}
+      <Box width="100%" maxW={CONTENT_MAX_WIDTH} px={CONTENT_PADDING_X} pt="24px">
+        <Banner>Work in progress — the results view is a placeholder</Banner>
+      </Box>
+      <Flex
+        align="flex-start"
+        gap="24px"
+        width="100%"
+        maxW={CONTENT_MAX_WIDTH}
+        px={CONTENT_PADDING_X}
+        pt="24px"
+        pb="40px"
+        direction={{base: 'column', lg: 'row'}}>
+        <SetupColumn
+          file={file}
+          onFileChange={setFile}
+          compressors={compressors}
+          iterations={iterations}
+          onIterationsChange={setIterations}
+          runConfig={runConfig}
+          runState={runState}
+          onRun={onRun}
+          onTrySample={null}
+          runBlockers={runBlockers}
+        />
+        <ResultsPanel runState={runState} />
       </Flex>
-    </Flex>
+    </>
   );
 }
