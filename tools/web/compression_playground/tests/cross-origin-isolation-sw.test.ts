@@ -21,16 +21,50 @@ function fakeSessionStorage(initial: Record<string, string> = {}) {
   };
 }
 
+/** A worker partway through installing, whose state the test moves along. */
+function fakeIncomingWorker() {
+  const listeners: (() => void)[] = [];
+  const worker = {
+    state: 'installing',
+    addEventListener: (_type: string, handler: () => void) => listeners.push(handler),
+    moveTo: (state: string) => {
+      worker.state = state;
+      listeners.forEach((handler) => handler());
+    },
+  };
+  return worker;
+}
+
+interface FakeRegistration {
+  active: object | null;
+  installing?: ReturnType<typeof fakeIncomingWorker> | null;
+  waiting?: object | null;
+}
+
+/** Whether `promise` has resolved by the time pending microtasks have run. */
+async function hasSettled(promise: Promise<void> | undefined) {
+  let settled = false;
+  void promise?.then(() => {
+    settled = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  return settled;
+}
+
 interface PageOptions {
   crossOriginIsolated?: boolean;
   reloaded?: boolean;
+  /** Site data blocked: reading `sessionStorage` at all throws, as in Chrome. */
+  storageBlocked?: boolean;
+  /** Reads work but writing the reload guard throws. */
+  storageWriteFails?: boolean;
   /** `null` for a module script, `''` for an inline one. */
   currentScript?: {src: string} | null;
   /** Omitted entirely for a browser without service worker support. */
   serviceWorker?: {
     controller?: object | null;
     /** A thunk, so a rejection is created under the module's `catch`, not before it. */
-    registration?: () => Promise<{active: object | null}>;
+    registration?: () => Promise<FakeRegistration>;
   };
 }
 
@@ -38,15 +72,36 @@ interface PageOptions {
 async function loadAsPage({
   crossOriginIsolated = false,
   reloaded = false,
+  storageBlocked = false,
+  storageWriteFails = false,
   currentScript = {src: SCRIPT_URL},
   serviceWorker,
 }: PageOptions) {
   const storage = fakeSessionStorage(reloaded ? {[RELOAD_KEY]: '1'} : {});
+  if (storageWriteFails) {
+    storage.setItem = () => {
+      throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+    };
+  }
   const reload = vi.fn();
   const listeners = new Map<string, () => void>();
-  const register = vi.fn(() => serviceWorker?.registration?.() ?? Promise.resolve({active: null}));
+  const register = vi.fn(
+    () =>
+      serviceWorker?.registration?.() ??
+      Promise.resolve<FakeRegistration>({active: null, installing: fakeIncomingWorker(), waiting: null}),
+  );
+  const page: {openzlIsolationSettled?: Promise<void>} = {};
 
-  vi.stubGlobal('window', {crossOriginIsolated, sessionStorage: storage, location: {reload}});
+  const win = Object.assign(page, {crossOriginIsolated, location: {reload}});
+  Object.defineProperty(win, 'sessionStorage', {
+    get: () => {
+      if (storageBlocked) {
+        throw new DOMException('Access is denied for this document.', 'SecurityError');
+      }
+      return storage;
+    },
+  });
+  vi.stubGlobal('window', win);
   vi.stubGlobal('document', {currentScript});
   vi.stubGlobal('navigator', {
     ...(serviceWorker === undefined
@@ -68,7 +123,14 @@ async function loadAsPage({
   await Promise.resolve();
   await Promise.resolve();
 
-  return {storage, reload, register, error, fireControllerChange: () => listeners.get('controllerchange')?.()};
+  return {
+    storage,
+    reload,
+    register,
+    error,
+    settled: page.openzlIsolationSettled,
+    fireControllerChange: () => listeners.get('controllerchange')?.(),
+  };
 }
 
 /**
@@ -164,7 +226,10 @@ describe('as a page', () => {
     // The silent case: `controllerchange` never comes, so without the check on
     // the registration the page would sit there unisolated forever.
     const {reload} = await loadAsPage({
-      serviceWorker: {controller: {}, registration: () => Promise.resolve({active: {}})},
+      serviceWorker: {
+        controller: {},
+        registration: () => Promise.resolve({active: {}, installing: null, waiting: null}),
+      },
     });
 
     expect(reload).toHaveBeenCalledOnce();
@@ -182,7 +247,10 @@ describe('as a page', () => {
 
   it('reloads once when the registration and the event both ask for it', async () => {
     const {reload, fireControllerChange} = await loadAsPage({
-      serviceWorker: {controller: {}, registration: () => Promise.resolve({active: {}})},
+      serviceWorker: {
+        controller: {},
+        registration: () => Promise.resolve({active: {}, installing: null, waiting: null}),
+      },
     });
 
     fireControllerChange();
@@ -196,6 +264,92 @@ describe('as a page', () => {
 
     expect(error).toHaveBeenCalledWith(expect.stringContaining('registering'), expect.any(Error));
     expect(reload).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The app holds back its missing-threads screen until this settles, so it has
+ * to settle on every path that leaves the page unisolated, and on none that
+ * reloads it. A path that never settles leaves the page blank.
+ */
+describe('the settled signal', () => {
+  it.each<[string, PageOptions]>([
+    ['the page is already isolated', {crossOriginIsolated: true, serviceWorker: {}}],
+    ['the script cannot find its own URL', {currentScript: null, serviceWorker: {}}],
+    ['there are no service workers', {}],
+    ['the one reload has been spent', {reloaded: true, serviceWorker: {}}],
+    ['registration fails', {serviceWorker: {registration: () => Promise.reject(new Error('denied'))}}],
+  ])('settles when %s', async (_case, options) => {
+    const {settled, reload} = await loadAsPage(options);
+
+    expect(reload).not.toHaveBeenCalled();
+    expect(await hasSettled(settled)).toBe(true);
+  });
+
+  it('stays pending while a new worker installs, and settles if it fails to', async () => {
+    const installing = fakeIncomingWorker();
+    const {settled} = await loadAsPage({
+      serviceWorker: {registration: () => Promise.resolve({active: null, installing, waiting: null})},
+    });
+
+    expect(await hasSettled(settled)).toBe(false);
+
+    installing.moveTo('redundant');
+    expect(await hasSettled(settled)).toBe(true);
+  });
+
+  it('settles when a new worker activates without taking control', async () => {
+    const installing = fakeIncomingWorker();
+    const {settled, reload} = await loadAsPage({
+      serviceWorker: {registration: () => Promise.resolve({active: null, installing, waiting: null})},
+    });
+
+    installing.moveTo('activated');
+    expect(reload).not.toHaveBeenCalled();
+    expect(await hasSettled(settled)).toBe(true);
+  });
+
+  it('stays pending when a new worker takes control and then activates', async () => {
+    const installing = fakeIncomingWorker();
+    const {settled, reload, fireControllerChange} = await loadAsPage({
+      serviceWorker: {registration: () => Promise.resolve({active: null, installing, waiting: null})},
+    });
+
+    fireControllerChange();
+    installing.moveTo('activated');
+    expect(reload).toHaveBeenCalledOnce();
+    expect(await hasSettled(settled)).toBe(false);
+  });
+
+  it('settles rather than hangs when site data is blocked', async () => {
+    // Reading `sessionStorage` throws here, while service workers still exist.
+    const {settled, reload, register, error} = await loadAsPage({storageBlocked: true, serviceWorker: {}});
+
+    expect(register).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalled();
+    expect(await hasSettled(settled)).toBe(true);
+  });
+
+  it('settles rather than hangs when the reload guard cannot be written', async () => {
+    const {settled, reload, fireControllerChange} = await loadAsPage({storageWriteFails: true, serviceWorker: {}});
+
+    // From the event, outside the code that decided to register.
+    fireControllerChange();
+    expect(reload).not.toHaveBeenCalled();
+    expect(await hasSettled(settled)).toBe(true);
+  });
+
+  it('stays pending when the page is about to reload', async () => {
+    const {settled, reload} = await loadAsPage({
+      serviceWorker: {
+        controller: {},
+        registration: () => Promise.resolve({active: {}, installing: null, waiting: null}),
+      },
+    });
+
+    expect(reload).toHaveBeenCalledOnce();
+    expect(await hasSettled(settled)).toBe(false);
   });
 });
 

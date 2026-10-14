@@ -83,6 +83,16 @@ if (typeof window === 'undefined') {
     );
   });
 } else {
+  // Resolves once this script knows it will not reload the page, and never
+  // resolves if it will. The app reads it through `isolationSettled()` in
+  // `src/engineSupport.ts`: a first visit loads unisolated and reloads
+  // isolated moments later, and without this the app would show its
+  // missing-threads screen for that moment.
+  let settle;
+  window.openzlIsolationSettled = new Promise((resolve) => {
+    settle = resolve;
+  });
+
   // `document.currentScript` is only readable while this script is executing,
   // so the URL is captured now rather than inside the callback below.
   //
@@ -92,49 +102,96 @@ if (typeof window === 'undefined') {
   // directory, which is worse than not registering at all.
   const workerUrl = document.currentScript?.src;
 
-  if (!workerUrl) {
-    console.error(
-      'OpenZL: the isolation worker can only register from a classic external script, so the WASM module cannot start.',
-    );
-  } else if (window.crossOriginIsolated) {
-    // Already isolated, so either the worker is in place or real headers
-    // arrived. Clear the guard so a future session may retry the reload.
-    window.sessionStorage.removeItem(RELOAD_KEY);
-  } else if (!('serviceWorker' in navigator)) {
-    console.error('OpenZL: no service worker support, so the WASM module cannot start.');
-  } else if (window.sessionStorage.getItem(RELOAD_KEY) !== null) {
-    // Reloaded once already and still not isolated: the worker cannot fix this,
-    // and reloading again would only loop.
-    console.error('OpenZL: cross-origin isolation failed, so the WASM module cannot start.');
-  } else {
-    // A full reload, so anything the page is already holding is lost. It
-    // happens within milliseconds of first load, long before someone could pick
-    // a file, but that stops being true if the app ever starts work of its own
-    // this early. Guarded so a worker that installs without isolating costs one
-    // reload rather than an endless cycle of them.
-    const reloadOnce = () => {
-      if (window.sessionStorage.getItem(RELOAD_KEY) !== null) {
-        return;
-      }
-      window.sessionStorage.setItem(RELOAD_KEY, '1');
-      window.location.reload();
-    };
+  // Anything that throws while deciding settles too, so the page is never left
+  // waiting on a promise nothing will resolve. Where site data is blocked, even
+  // reading `sessionStorage` throws, and that is one of the cases the page's
+  // missing-threads message explains.
+  const giveUp = (error) => {
+    console.error('OpenZL: cross-origin isolation could not be set up, so the WASM module cannot start.', error);
+    settle();
+  };
 
-    navigator.serviceWorker.addEventListener('controllerchange', reloadOnce);
-    navigator.serviceWorker
-      .register(workerUrl)
-      .then((registration) => {
-        // An already active worker never fires `controllerchange`, so without
-        // this the page would sit there unisolated and silent -- whether the
-        // worker controls it and the headers did not come back, or it does not,
-        // as after a hard reload, which bypasses the worker. A normal reload goes
-        // through it either way.
-        if (registration.active !== null) {
-          reloadOnce();
+  try {
+    if (!workerUrl) {
+      console.error(
+        'OpenZL: the isolation worker can only register from a classic external script, so the WASM module cannot start.',
+      );
+      settle();
+    } else if (window.crossOriginIsolated) {
+      // Already isolated, so either the worker is in place or real headers
+      // arrived. Clear the guard so a future session may retry the reload.
+      window.sessionStorage.removeItem(RELOAD_KEY);
+      settle();
+    } else if (!('serviceWorker' in navigator)) {
+      console.error('OpenZL: no service worker support, so the WASM module cannot start.');
+      settle();
+    } else if (window.sessionStorage.getItem(RELOAD_KEY) !== null) {
+      // Reloaded once already and still not isolated: the worker cannot fix this,
+      // and reloading again would only loop.
+      console.error('OpenZL: cross-origin isolation failed, so the WASM module cannot start.');
+      settle();
+    } else {
+      // A full reload, so anything the page is already holding is lost. It
+      // happens within milliseconds of first load, long before someone could pick
+      // a file, but that stops being true if the app ever starts work of its own
+      // this early. Guarded so a worker that installs without isolating costs one
+      // reload rather than an endless cycle of them.
+      // Also runs from a `controllerchange` event, outside the `try` above.
+      const reloadOnce = () => {
+        try {
+          if (window.sessionStorage.getItem(RELOAD_KEY) !== null) {
+            return;
+          }
+          window.sessionStorage.setItem(RELOAD_KEY, '1');
+          window.location.reload();
+        } catch (error) {
+          giveUp(error);
         }
-      })
-      .catch((error) => {
-        console.error('OpenZL: registering the cross-origin isolation worker failed.', error);
-      });
+      };
+
+      navigator.serviceWorker.addEventListener('controllerchange', reloadOnce);
+      navigator.serviceWorker
+        .register(workerUrl)
+        .then((registration) => {
+          // An already active worker never fires `controllerchange`, so without
+          // this the page would sit there unisolated and silent -- whether the
+          // worker controls it and the headers did not come back, or it does not,
+          // as after a hard reload, which bypasses the worker. A normal reload goes
+          // through it either way.
+          if (registration.active !== null) {
+            reloadOnce();
+            return;
+          }
+          // A new worker is on its way to `controllerchange`, unless it fails to
+          // install, or activates without taking control: activation goes ahead
+          // even when `clients.claim()` rejects. Nothing else would say so in
+          // either case. When it does take control, `controllerchange` arrives
+          // before `activated`, and `reloadOnce` has already set the guard.
+          const incoming = registration.installing ?? registration.waiting;
+          if (incoming !== null) {
+            incoming.addEventListener('statechange', () => {
+              try {
+                if (
+                  incoming.state === 'redundant' ||
+                  (incoming.state === 'activated' && window.sessionStorage.getItem(RELOAD_KEY) === null)
+                ) {
+                  settle();
+                }
+              } catch (error) {
+                giveUp(error);
+              }
+            });
+            return;
+          }
+          // No worker in any state, so nothing will fire `controllerchange`.
+          settle();
+        })
+        .catch((error) => {
+          console.error('OpenZL: registering the cross-origin isolation worker failed.', error);
+          settle();
+        });
+    }
+  } catch (error) {
+    giveUp(error);
   }
 }
