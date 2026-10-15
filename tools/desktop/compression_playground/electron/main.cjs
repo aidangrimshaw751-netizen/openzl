@@ -9,6 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const {app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session, shell, utilityProcess} = require('electron');
+const {menuTemplate} = require('./app-menu.cjs');
 const {APP_ORIGIN, APP_SCHEME, originOf, resolveBundlePath} = require('./app-protocol.cjs');
 const {validateRequest} = require('./benchmark-request.cjs');
 const {parseWorkerMessage} = require('./worker-messages.cjs');
@@ -279,7 +280,15 @@ async function createWindow() {
 }
 
 const started = app.whenReady().then(async () => {
-  Menu.setApplicationMenu(null);
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate(
+      menuTemplate({
+        platform: process.platform,
+        isPackaged: app.isPackaged,
+        openExternal: (url) => void shell.openExternal(url),
+      }),
+    ),
+  );
   denyPermissions();
   serveRenderer();
   registerIpc();
