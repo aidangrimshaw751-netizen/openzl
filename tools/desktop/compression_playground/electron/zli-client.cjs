@@ -26,17 +26,21 @@ const benchmarkRowSchema = z.object({
   iters: csvCount.pipe(z.int().min(1)),
 });
 
-function parseOutput(schema, payload) {
+function parseOutput(schema, payload, binary) {
   const parsed = schema.safeParse(payload);
   if (parsed.success) {
     return parsed.data;
   }
   const [issue] = parsed.error.issues;
   const field = issue.path.length > 0 ? `${issue.path.join('.')}: ` : '';
-  throw new Error(`zli returned an unexpected result (${field}${issue.message})`);
+  throw new Error(`${binary} returned an unexpected result (${field}${issue.message})`);
 }
 
-// SIGTERM first, then SIGKILL if zli has not exited. Windows terminates on either.
+function executableName(executable) {
+  return path.basename(executable).replace(/\.exe$/i, '');
+}
+
+// SIGTERM first, then SIGKILL if the child has not exited. Windows terminates on either.
 function terminate(child) {
   child.kill('SIGTERM');
   const escalate = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS);
@@ -44,20 +48,20 @@ function terminate(child) {
   child.once('exit', () => clearTimeout(escalate));
 }
 
-function runZli(zliPath, args, {signal, onChild}) {
+/** Runs a native benchmark binary, which reports failures on stderr. */
+function runNative(executable, args, {signal, onChild}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason);
       return;
     }
-    // --verbose 1 limits stderr to errors, so a failure message can be shown as-is.
-    const child = spawn(zliPath, [...args, '--verbose', '1'], {
+    const child = spawn(executable, args, {
       stdio: ['ignore', 'ignore', 'pipe'],
       windowsHide: true,
     });
     child.stderr.setEncoding('utf8');
     let stderr = '';
-    // Why zli was stopped; reported once it has actually exited.
+    // Why the child was stopped; reported once it has actually exited.
     let stopReason;
     let settled = false;
     const fail = (error) => {
@@ -107,7 +111,7 @@ function runZli(zliPath, args, {signal, onChild}) {
           new Error(
             detail !== ''
               ? detail
-              : `zli exited unexpectedly (${exitSignal === null ? `code ${code}` : `signal ${exitSignal}`})`,
+              : `${executableName(executable)} exited unexpectedly (${exitSignal === null ? `code ${code}` : `signal ${exitSignal}`})`,
           ),
         );
         return;
@@ -116,6 +120,11 @@ function runZli(zliPath, args, {signal, onChild}) {
       resolve();
     });
   });
+}
+
+function runZli(zliPath, args, context) {
+  // --verbose 1 limits stderr to errors, so a failure message can be shown as-is.
+  return runNative(zliPath, [...args, '--verbose', '1'], context);
 }
 
 function profileArguments(compressor) {
@@ -127,12 +136,15 @@ function profileArguments(compressor) {
   return args;
 }
 
-/** Reads the single row zli benchmark --output-csv writes for one input file. */
-async function readBenchmarkCsv(csvPath) {
+/**
+ * Reads the single row zli benchmark --output-csv writes for one input file.
+ * zstd-benchmark writes the same columns.
+ */
+async function readBenchmarkCsv(csvPath, binary) {
   const [header, row = ''] = (await fs.readFile(csvPath, 'utf8')).split(/\r?\n/);
   const values = row.split(',');
   const fields = Object.fromEntries(header.split(',').map((name, index) => [name.trim(), values[index]]));
-  const field = parseOutput(benchmarkRowSchema, fields);
+  const field = parseOutput(benchmarkRowSchema, fields, binary);
   return {
     iterations: field.iters,
     srcSize: field.srcSize,
@@ -142,23 +154,17 @@ async function readBenchmarkCsv(csvPath) {
   };
 }
 
+function benchmarkArguments(level, iterations, csvPath) {
+  return ['--level', String(level), '--num-iters', String(iterations), '--output-csv', csvPath];
+}
+
 async function benchmark(zliPath, inputPath, compressorArgs, level, iterations, csvPath, context) {
   await runZli(
     zliPath,
-    [
-      'benchmark',
-      inputPath,
-      ...compressorArgs,
-      '--level',
-      String(level),
-      '--num-iters',
-      String(iterations),
-      '--output-csv',
-      csvPath,
-    ],
+    ['benchmark', inputPath, ...compressorArgs, ...benchmarkArguments(level, iterations, csvPath)],
     context,
   );
-  return readBenchmarkCsv(csvPath);
+  return readBenchmarkCsv(csvPath, 'zli');
 }
 
 async function trainedCandidatePaths(zliPath, inputPath, compressor, outputDirectory, context) {
@@ -191,22 +197,12 @@ async function trainedCandidatePaths(zliPath, inputPath, compressor, outputDirec
 }
 
 /**
- * zli train benchmarks candidates at a fixed iteration count and has no
- * --level, so each candidate is re-benchmarked with the requested settings.
- * Aborting `signal` stops the running zli and rejects with `signal.reason`.
- * Scratch files go under `tempRoot`, which defaults to the OS temp directory.
- * `onStage` hears which phase is starting: benchmark, train, or candidates.
+ * Calls `body(inputPath, workDirectory)` with the input as a file a native
+ * binary can read, inside a scratch directory under `tempRoot` that is removed
+ * afterwards. On Windows the binaries read paths in the ANSI code page, so a
+ * path they could not open is refused before anything is created or spawned.
  */
-async function runOpenZLBenchmark(
-  zliPath,
-  input,
-  compressor,
-  iterations,
-  {signal, onChild, onStage, tempRoot = os.tmpdir(), codePage} = {},
-) {
-  const context = {signal, onChild};
-  // Before anything is created or spawned: on Windows zli reads paths in the
-  // ANSI code page, and every file of the run lives under the temp folder.
+async function withInputFile(input, {tempRoot = os.tmpdir(), codePage} = {}, body) {
   const onWindows = codePage !== undefined || process.platform === 'win32';
   const ansiCodePage = codePage ?? (onWindows ? await windowsAnsiCodePage() : undefined);
   if (ansiCodePage !== undefined) {
@@ -221,7 +217,7 @@ async function runOpenZLBenchmark(
   try {
     let inputPath;
     if ('path' in input) {
-      // Absolute paths never start with '-', so zli cannot parse them as flags.
+      // Absolute paths never start with '-', so they cannot be parsed as flags.
       inputPath = path.resolve(input.path);
       // zli would get a path the code page cannot represent mangled, so it
       // reads a copy in the work directory, whose path passed the check above.
@@ -235,7 +231,28 @@ async function runOpenZLBenchmark(
       inputPath = path.join(workDirectory, 'input.bin');
       await fs.writeFile(inputPath, Buffer.from(input.data.buffer, input.data.byteOffset, input.data.byteLength));
     }
+    return await body(inputPath, workDirectory);
+  } finally {
+    await fs.rm(workDirectory, {recursive: true, force: true});
+  }
+}
 
+/**
+ * zli train benchmarks candidates at a fixed iteration count and has no
+ * --level, so each candidate is re-benchmarked with the requested settings.
+ * Aborting `signal` stops the running zli and rejects with `signal.reason`.
+ * Scratch files go under `tempRoot`, which defaults to the OS temp directory.
+ * `onStage` hears which phase is starting: benchmark, train, or candidates.
+ */
+function runOpenZLBenchmark(
+  zliPath,
+  input,
+  compressor,
+  iterations,
+  {signal, onChild, onStage, tempRoot, codePage} = {},
+) {
+  const context = {signal, onChild};
+  return withInputFile(input, {tempRoot, codePage}, async (inputPath, workDirectory) => {
     if (!compressor.trainRequested) {
       onStage?.({stage: 'benchmark'});
       return [
@@ -274,9 +291,30 @@ async function runOpenZLBenchmark(
       );
     }
     return results;
-  } finally {
-    await fs.rm(workDirectory, {recursive: true, force: true});
-  }
+  });
 }
 
-module.exports = {runOpenZLBenchmark};
+/**
+ * Measures zstd with the zstd-benchmark binary built beside zli, so zstd rows
+ * are timed the same way as OpenZL rows. Takes the same options as
+ * runOpenZLBenchmark.
+ */
+function runZstdBenchmark(
+  zstdBenchmarkPath,
+  input,
+  level,
+  iterations,
+  {signal, onChild, onStage, tempRoot, codePage} = {},
+) {
+  return withInputFile(input, {tempRoot, codePage}, async (inputPath, workDirectory) => {
+    onStage?.({stage: 'benchmark'});
+    const csvPath = path.join(workDirectory, 'zstd.csv');
+    await runNative(zstdBenchmarkPath, [inputPath, ...benchmarkArguments(level, iterations, csvPath)], {
+      signal,
+      onChild,
+    });
+    return readBenchmarkCsv(csvPath, 'zstd-benchmark');
+  });
+}
+
+module.exports = {runOpenZLBenchmark, runZstdBenchmark};

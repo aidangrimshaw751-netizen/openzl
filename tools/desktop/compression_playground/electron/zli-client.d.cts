@@ -43,3 +43,11 @@ export function runOpenZLBenchmark(
   iterations: number,
   options?: RunOptions,
 ): Promise<ZliBenchmarkResult[]>;
+
+export function runZstdBenchmark(
+  zstdBenchmarkPath: string,
+  input: {path: string} | {data: Uint8Array},
+  level: number,
+  iterations: number,
+  options?: RunOptions,
+): Promise<ZliBenchmarkResult>;
