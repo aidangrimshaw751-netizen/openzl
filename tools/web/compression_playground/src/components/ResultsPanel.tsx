@@ -6,6 +6,7 @@ import {isRunInProgress, type BenchmarkJob, type Candidate, type RunState} from 
 import {formatBytes, resultsOf} from '../measurements.ts';
 import MeasurementsTable from './MeasurementsTable.tsx';
 import RatioSpeedCharts from './RatioSpeedCharts.tsx';
+import {TRY_SAMPLE_LABEL} from '../sample.ts';
 
 const HOW_IT_WORKS_STEPS = ['Choose your data.', 'Pick compressors to compare.', 'Run the benchmark.'];
 
@@ -179,7 +180,7 @@ export default function ResultsPanel({runState, desktop = false}: ResultsPanelPr
                 No results yet
               </Text>
               <Text color="pg.secondary" fontSize="14px" lineHeight="1.4" m={0}>
-                Select your data to compress or hit &ldquo;Try a 5 MB sample&rdquo; to see the playground work.
+                Select your data to compress or hit &ldquo;{TRY_SAMPLE_LABEL}&rdquo; to see the playground work.
               </Text>
             </VStack>
           </Box>

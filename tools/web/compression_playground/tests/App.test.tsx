@@ -131,7 +131,7 @@ describe('Compression Playground', () => {
     renderWithPlaygroundTheme(<App />);
     expect(screen.getByRole('heading', {level: 2, name: 'Results'})).toBeInTheDocument();
     expect(screen.getByText('No results yet')).toBeInTheDocument();
-    expect(screen.getByText(/Try a 5 MB sample.*to see the playground work/)).toBeInTheDocument();
+    expect(screen.getByText(/Try a 4.2 MB sample.*to see the playground work/)).toBeInTheDocument();
     expect(screen.getByRole('heading', {level: 3, name: 'How it works'})).toBeInTheDocument();
     expect(screen.getByText('Choose your data.')).toBeInTheDocument();
     expect(screen.getByRole('heading', {level: 3, name: 'Reading the results'})).toBeInTheDocument();
@@ -278,8 +278,6 @@ describe('Compression Playground in the desktop app', () => {
   afterEach(() => {
     cleanup();
     delete window.openzlDesktop;
-    // Only the sample test needs it; see there.
-    delete (File.prototype as {arrayBuffer?: unknown}).arrayBuffer;
   });
 
   it('runs the chosen file through the desktop backend and reports it like any other run', async () => {
@@ -314,38 +312,29 @@ describe('Compression Playground in the desktop app', () => {
     });
   });
 
-  it('runs the 5 MB sample without a file being chosen', async () => {
-    // jsdom's File cannot be read as bytes, which is how a file with no path
-    // reaches the backend, so teach it the one method that takes.
-    Object.defineProperty(File.prototype, 'arrayBuffer', {
-      configurable: true,
-      value(this: Blob) {
-        return new Promise<ArrayBuffer>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            resolve(reader.result as ArrayBuffer);
-          };
-          reader.onerror = () => {
-            reject(reader.error);
-          };
-          reader.readAsArrayBuffer(this);
-        });
-      },
+  it('runs the bundled sample without a file being chosen', async () => {
+    // The sample is installed with the app, so the page never reads or names
+    // a path for it: the main process supplies where it lives.
+    const startBenchmark = answeringBridge(() => {
+      throw new Error('the sample has no File to resolve');
     });
-    // No path for it: it was made here, not picked from disk.
-    const startBenchmark = answeringBridge(() => '');
     renderWithPlaygroundTheme(<App />);
-    const sample = screen.getByRole('button', {name: 'Try a 5 MB sample'});
+    const sample = screen.getByRole('button', {name: 'Try a 4.2 MB sample'});
     expect(sample).toBeEnabled();
 
     fireEvent.click(sample);
 
     expect(await screen.findByText(/3 succeeded, 0 failed/)).toBeInTheDocument();
-    const [request] = startBenchmark.mock.calls[0];
-    expect(request.input).toHaveProperty('data');
-    expect((request.input as {data: Uint8Array}).data).toHaveLength(5_000_000);
+    expect(startBenchmark.mock.calls[0][0].input).toEqual({sample: true});
     // And it is the file now chosen, so Run repeats it.
-    expect(within(screen.getByTestId('upload-dropzone')).getByText('sample.txt')).toBeInTheDocument();
+    const dropzone = within(screen.getByTestId('upload-dropzone'));
+    expect(dropzone.getByText('era5_ints.bin')).toBeInTheDocument();
+    expect(dropzone.getByText(/4\.2 MB/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', {name: 'Run benchmark'}));
+    await waitFor(() => {
+      expect(startBenchmark).toHaveBeenCalledTimes(2);
+    });
+    expect(startBenchmark.mock.calls[1][0].input).toEqual({sample: true});
   });
 
   it('holds the sample back while a row has no levels, as it does Run', async () => {
@@ -359,7 +348,7 @@ describe('Compression Playground in the desktop app', () => {
     fireEvent.click(levels.getByText('None'));
 
     await waitFor(() => {
-      expect(screen.getByRole('button', {name: 'Try a 5 MB sample'})).toBeDisabled();
+      expect(screen.getByRole('button', {name: 'Try a 4.2 MB sample'})).toBeDisabled();
     });
   });
 

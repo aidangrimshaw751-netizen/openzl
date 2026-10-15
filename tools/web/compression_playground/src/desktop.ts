@@ -5,6 +5,7 @@ import type {
   BenchmarkRequest,
   BenchmarkResult,
 } from '../../../desktop/compression_playground/electron/native-worker.cjs';
+import type {RunInput} from './benchmarkTypes.ts';
 
 export interface BenchmarkRun {
   results: Promise<BenchmarkResult[]>;
@@ -28,13 +29,18 @@ export function desktopBridge(): OpenZLDesktopBridge | undefined {
   return typeof window === 'undefined' ? undefined : window.openzlDesktop;
 }
 
-export function inputForFile(file: File, bridge: OpenZLDesktopBridge): Promise<BenchmarkRequest['input']> {
-  const path = bridge.getPathForFile(file);
-  if (path !== '') {
-    return Promise.resolve({path});
+/**
+ * Names the input for the backend, which reads it from disk. A file the user
+ * picked or dropped always has a path in Electron; one made in the page does
+ * not, and the backend has no way to read it.
+ */
+export function inputForFile(input: RunInput, bridge: OpenZLDesktopBridge): BenchmarkRequest['input'] {
+  if ('kind' in input) {
+    return {sample: true};
   }
-  // A path is normally available in Electron. Keeping the byte fallback makes
-  // programmatically-created Files and renderer tests useful without granting
-  // the renderer general filesystem access.
-  return file.arrayBuffer().then((contents) => ({data: new Uint8Array(contents)}));
+  const path = bridge.getPathForFile(input);
+  if (path === '') {
+    throw new Error(`${input.name} is not a file on disk`);
+  }
+  return {path};
 }

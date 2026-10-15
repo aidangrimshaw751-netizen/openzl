@@ -8,8 +8,9 @@ import type {
   BenchmarkRequest,
   BenchmarkResult,
 } from '../../../desktop/compression_playground/electron/native-worker.cjs';
-import type {CompressorConfig, RunConfig, RunState} from '../src/benchmarkTypes.ts';
+import type {CompressorConfig, RunConfig, RunInput, RunState} from '../src/benchmarkTypes.ts';
 import type {OpenZLDesktopBridge} from '../src/desktop.ts';
+import {BUNDLED_SAMPLE} from '../src/sample.ts';
 
 /**
  * A stand-in for the preload bridge. The test decides when the backend says
@@ -53,7 +54,10 @@ const OPENZL: CompressorConfig = {
   training: null,
 };
 
-function configWith(compressors: readonly CompressorConfig[], input = new File(['x'], 'data.bin')): RunConfig {
+function configWith(
+  compressors: readonly CompressorConfig[],
+  input: RunInput = new File(['x'], 'data.bin'),
+): RunConfig {
   return {input, compressors, iterations: 3};
 }
 
@@ -245,13 +249,12 @@ describe('runDesktopBenchmark', () => {
     expect(state.status === 'error' && state.results).toHaveLength(1);
   });
 
-  it('ends in an error when the input cannot be read', async () => {
+  it('ends in an error, before starting the backend, when the file has no path', async () => {
     const {bridge, started} = fakeBridge('');
-    const unreadable = {size: 1, arrayBuffer: () => Promise.reject(new Error('Permission denied'))} as unknown as File;
-    const {last} = run(configWith([OPENZL], unreadable), bridge);
+    const {last} = run(configWith([OPENZL], new File(['abc'], 'made-up.bin')), bridge);
     await settle();
 
-    expect(last()).toMatchObject({status: 'error', message: 'Permission denied'});
+    expect(last()).toMatchObject({status: 'error', message: 'made-up.bin is not a file on disk'});
     expect(started).toHaveLength(0);
   });
 
@@ -275,12 +278,12 @@ describe('runDesktopBenchmark', () => {
     await settle();
   });
 
-  it('reads the bytes when the file has no path', async () => {
+  it('asks the backend for the bundled sample', async () => {
     const {bridge, started} = fakeBridge('');
-    run(configWith([OPENZL], new File(['abc'], 'made-up.bin')), bridge);
+    run(configWith([OPENZL], BUNDLED_SAMPLE), bridge);
     await settle();
 
-    expect(started[0].request.input).toEqual({data: new TextEncoder().encode('abc')});
+    expect(started[0].request.input).toEqual({sample: true});
     started[0].resolve();
     await settle();
   });

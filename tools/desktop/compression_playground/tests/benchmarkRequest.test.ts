@@ -54,7 +54,7 @@ describe('validateRequest', () => {
       request({compressors: [openZLRow({level: 9, candidates: 25, profileArg: 'x'.repeat(4096)})]}),
       request({compressors: [{id: 1, compressor: 'zstd', level: 19}]}),
       request({compressors: [{id: 1, compressor: 'gzip', level: 9}]}),
-      request({input: {data: new Uint8Array([1, 2, 3])}}),
+      request({input: {sample: true}}),
     ];
     for (const valid of boundaries) {
       expect(validateRequest(valid)).toEqual(valid);
@@ -138,11 +138,13 @@ describe('validateRequest', () => {
     }
     for (const input of [
       {},
-      {data: [1, 2, 3]},
-      {data: new ArrayBuffer(3)},
-      {path: '/tmp/a', data: new Uint8Array(1)},
+      {sample: false},
+      {sample: 'yes'},
+      // Bytes are no longer accepted: every input is a file on disk.
+      {data: new Uint8Array(3)},
+      {path: '/tmp/a', sample: true},
     ]) {
-      rejects(request({input}), TypeError, 'Benchmark input must contain a file path or bytes');
+      rejects(request({input}), TypeError, 'Benchmark input must be a file path or the bundled sample');
     }
   });
 });

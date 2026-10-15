@@ -70,8 +70,16 @@
         ]
       },
       {
+        "from": "../../web/compression_playground/src/bundledSample.json",
+        "to": "shared/bundledSample.json"
+      },
+      {
         "from": "../../web/compression_playground/src/compressorLimits.json",
         "to": "shared/compressorLimits.json"
+      },
+      {
+        "from": "../../../examples/getting_started/sample_inputs/era5_ints.bin",
+        "to": "era5_ints.bin"
       },
       {
         "from": "electron/native-worker.cjs",
