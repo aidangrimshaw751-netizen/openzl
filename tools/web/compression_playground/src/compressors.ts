@@ -94,6 +94,8 @@ export const GZIP_LEVELS = range(1, maxLevel.gzip);
  * throws above `MAX_TRAIN_CANDIDATES` (25, which bounds its allocations).
  */
 export const TRAINED_CANDIDATE_COUNTS = range(trainedCandidates.browserMin, trainedCandidates.max);
+/** The desktop app trains with `zli train`, which rejects fewer than 10 candidates. */
+export const DESKTOP_TRAINED_CANDIDATE_COUNTS = range(trainedCandidates.desktopMin, trainedCandidates.max);
 
 export const OPENZL_DEFAULT_LEVEL = 6;
 
@@ -137,6 +139,7 @@ export function evenlySpacedLevels(compressor: 'zstd' | 'gzip', count: number): 
 }
 export const DEFAULT_OPENZL_PROFILE: OpenZlProfile = 'serial';
 export const DEFAULT_TRAINED_CANDIDATES = 6;
+export const DESKTOP_DEFAULT_TRAINED_CANDIDATES = 10;
 
 export function levelsFor(compressor: CompressorName): readonly number[] {
   switch (compressor) {
@@ -180,6 +183,8 @@ export interface OpenZlRow extends CompressorRowBase {
   /** What the user asked for, not what will happen: see `isTrainableProfile`. */
   trainRequested: boolean;
   candidates: number;
+  /** Forwarded to `zli` as `--profile-arg`. Only the desktop app can use it. */
+  profileArg: string;
   optionsOpen: boolean;
 }
 
@@ -194,9 +199,9 @@ export interface GzipRow extends LeveledRowBase {
 
 export type CompressorRow = OpenZlRow | ZstdRow | GzipRow;
 
-export function createCompressorRow(id: number, compressor: 'OpenZL'): OpenZlRow;
-export function createCompressorRow(id: number, compressor: CompressorName): CompressorRow;
-export function createCompressorRow(id: number, compressor: CompressorName): CompressorRow {
+export function createCompressorRow(id: number, compressor: 'OpenZL', desktop?: boolean): OpenZlRow;
+export function createCompressorRow(id: number, compressor: CompressorName, desktop?: boolean): CompressorRow;
+export function createCompressorRow(id: number, compressor: CompressorName, desktop = false): CompressorRow {
   if (compressor === 'OpenZL') {
     return {
       id,
@@ -204,7 +209,8 @@ export function createCompressorRow(id: number, compressor: CompressorName): Com
       level: OPENZL_DEFAULT_LEVEL,
       profile: DEFAULT_OPENZL_PROFILE,
       trainRequested: true,
-      candidates: DEFAULT_TRAINED_CANDIDATES,
+      candidates: desktop ? DESKTOP_DEFAULT_TRAINED_CANDIDATES : DEFAULT_TRAINED_CANDIDATES,
+      profileArg: '',
       optionsOpen: true,
     };
   }
