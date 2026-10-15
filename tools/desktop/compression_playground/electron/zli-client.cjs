@@ -8,12 +8,32 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
+const {z} = require('zod');
 
 const TRAINING_THREADS = Math.min(4, Math.max(1, os.availableParallelism()));
-// The leading columns of zli benchmark --output-csv. The path column after them
-// is not read, so a quoted path cannot shift the numbers.
-const CSV_COLUMNS = ['srcSize', 'compressedSize', 'compressionRatio', 'ctimeMs', 'dtimeMs', 'iters'];
 const KILL_GRACE_MS = 2000;
+
+const csvCount = z.string().trim().regex(/^\d+$/, 'expected a whole number').transform(Number);
+const csvNumber = z.string().trim().min(1, 'expected a number').pipe(z.coerce.number().min(0));
+// The columns of a zli benchmark --output-csv row this client reads. The path
+// column comes last and is not read, so a quoted path cannot shift the numbers.
+const benchmarkRowSchema = z.object({
+  srcSize: csvCount,
+  compressedSize: csvCount,
+  ctimeMs: csvNumber,
+  dtimeMs: csvNumber,
+  iters: csvCount.pipe(z.int().min(1)),
+});
+
+function parseOutput(schema, payload) {
+  const parsed = schema.safeParse(payload);
+  if (parsed.success) {
+    return parsed.data;
+  }
+  const [issue] = parsed.error.issues;
+  const field = issue.path.length > 0 ? `${issue.path.join('.')}: ` : '';
+  throw new Error(`zli returned an unexpected result (${field}${issue.message})`);
+}
 
 // SIGTERM first, then SIGKILL if zli has not exited. Windows terminates on either.
 function terminate(child) {
@@ -109,16 +129,9 @@ function profileArguments(compressor) {
 /** Reads the single row zli benchmark --output-csv writes for one input file. */
 async function readBenchmarkCsv(csvPath) {
   const [header, row = ''] = (await fs.readFile(csvPath, 'utf8')).split(/\r?\n/);
-  const names = header.split(',').slice(0, CSV_COLUMNS.length);
-  const values = row.split(',').slice(0, CSV_COLUMNS.length);
-  if (
-    names.join() !== CSV_COLUMNS.join() ||
-    values.length !== CSV_COLUMNS.length ||
-    values.some((value) => value.trim() === '' || !(Number(value) >= 0))
-  ) {
-    throw new Error('zli returned an unexpected result');
-  }
-  const field = Object.fromEntries(CSV_COLUMNS.map((name, index) => [name, Number(values[index])]));
+  const values = row.split(',');
+  const fields = Object.fromEntries(header.split(',').map((name, index) => [name.trim(), values[index]]));
+  const field = parseOutput(benchmarkRowSchema, fields);
   return {
     iterations: field.iters,
     srcSize: field.srcSize,

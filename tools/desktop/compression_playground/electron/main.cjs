@@ -11,6 +11,7 @@ const {pathToFileURL} = require('node:url');
 const {app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session, shell, utilityProcess} = require('electron');
 const {APP_ORIGIN, APP_SCHEME, originOf, resolveBundlePath} = require('./app-protocol.cjs');
 const {validateRequest} = require('./benchmark-request.cjs');
+const {parseWorkerMessage} = require('./worker-messages.cjs');
 const {isAllowedExternalUrl} = require('./external-links.cjs');
 
 const BENCHMARK_CHANNEL = 'openzl:benchmark';
@@ -93,7 +94,14 @@ function startRun(request, port) {
     }
   };
 
-  worker.on('message', (message) => {
+  worker.on('message', (rawMessage) => {
+    let message;
+    try {
+      message = parseWorkerMessage(rawMessage);
+    } catch (error) {
+      disposeRun(run, {type: 'error', message: error.message});
+      return;
+    }
     if (message.type === 'child') {
       if (message.state === 'exited') {
         run.childPids.delete(message.pid);
