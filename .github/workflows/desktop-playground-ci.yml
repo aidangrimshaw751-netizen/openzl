@@ -197,6 +197,8 @@ jobs:
         run: yarn build:renderer
       - name: Window security smoke test
         run: ${{ matrix.display }} npx electron electron/tests/window-security-smoke.cjs
+      - name: UI smoke test
+        run: ${{ matrix.display }} npx electron electron/tests/ui-smoke.cjs
       - name: Cancellation smoke test
         if: matrix.cancellation
         run: ${{ matrix.display }} node electron/tests/cancellation-smoke.cjs
