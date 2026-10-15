@@ -79,7 +79,8 @@ async function harness(scenario, sample) {
     ],
   };
   await window.webContents.executeJavaScript(`
-    window.testRun = window.openzlDesktop.startBenchmark(${JSON.stringify(request)});
+    window.testEvents = [];
+    window.testRun = window.openzlDesktop.startBenchmark(${JSON.stringify(request)}, (event) => window.testEvents.push(event));
     window.testOutcome = window.testRun.results.then(() => 'resolved', (error) => error.message);
     undefined;
   `);
@@ -89,6 +90,10 @@ async function harness(scenario, sample) {
 
   const endedAt = Date.now();
   if (scenario === 'cancel') {
+    result.stagesBeforeCancel = await window.webContents.executeJavaScript(
+      "window.testEvents.map((event) => event.type === 'progress' ? event.progress.stage : event.type)",
+    );
+    assert.deepEqual(result.stagesBeforeCancel, ['train']);
     result.outcome = await window.webContents.executeJavaScript('window.testRun.cancel(); window.testOutcome');
     assert.equal(result.outcome, 'Benchmark cancelled');
   } else if (scenario === 'reload') {

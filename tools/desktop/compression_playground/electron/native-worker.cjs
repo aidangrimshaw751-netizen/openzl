@@ -92,40 +92,53 @@ function finishOpenZLResult(result) {
   };
 }
 
-async function run({zliPath, request, tempRoot}, {signal, onChild} = {}) {
+function rowLabel(compressor) {
+  return compressor.compressor === 'OpenZL'
+    ? `OpenZL ${compressor.profile}`
+    : `${compressor.compressor} ${compressor.level}`;
+}
+
+/**
+ * Runs every row in order. `onEvent` receives {type: 'progress', progress} as
+ * each row and stage starts, and {type: 'partial', results} as each row ends.
+ */
+async function run({zliPath, request, tempRoot}, {signal, onChild, onEvent} = {}) {
   const results = [];
   let input;
 
-  for (const compressor of request.compressors) {
+  for (const [rowIndex, compressor] of request.compressors.entries()) {
     signal?.throwIfAborted();
+    const label = rowLabel(compressor);
+    const row = {rowId: compressor.id, rowIndex, rowCount: request.compressors.length, label};
+    const onStage = (stage) => onEvent?.({type: 'progress', progress: {...row, ...stage}});
+    const rowResults = [];
     if (compressor.compressor === 'OpenZL') {
       const nativeResults = await runOpenZLBenchmark(zliPath, request.input, compressor, request.iterations, {
         signal,
         onChild,
+        onStage,
         tempRoot,
       });
       for (let index = 0; index < nativeResults.length; index += 1) {
         const suffix = nativeResults.length > 1 ? ` candidate ${index + 1}` : '';
-        results.push({
+        rowResults.push({
           ...finishOpenZLResult(nativeResults[index]),
           rowId: compressor.id,
           candidate: index,
-          label: `OpenZL ${compressor.profile}${suffix}`,
+          label: `${label}${suffix}`,
         });
       }
     } else {
+      onStage({stage: 'benchmark'});
       input ??= readInput(request.input);
       const result =
         compressor.compressor === 'zstd'
           ? await benchmarkZstd(input, compressor.level, request.iterations, signal)
           : await benchmarkGzip(input, compressor.level, request.iterations, signal);
-      results.push({
-        ...result,
-        rowId: compressor.id,
-        candidate: 0,
-        label: `${compressor.compressor} ${compressor.level}`,
-      });
+      rowResults.push({...result, rowId: compressor.id, candidate: 0, label});
     }
+    results.push(...rowResults);
+    onEvent?.({type: 'partial', results: rowResults});
   }
   return results;
 }
@@ -133,7 +146,8 @@ async function run({zliPath, request, tempRoot}, {signal, onChild} = {}) {
 /**
  * Worker protocol. From the main process: {type: 'start', zliPath, request, tempRoot},
  * then optionally {type: 'cancel'}. To it: {type: 'child', pid, state} for
- * every zli process, then exactly one of {type: 'results', results},
+ * every zli process, run() events ({type: 'progress'} and {type: 'partial'}),
+ * then exactly one of {type: 'results', results},
  * {type: 'error', message}, or {type: 'cancelled'}.
  */
 function serve(parentPort) {
@@ -144,7 +158,7 @@ function serve(parentPort) {
       controller.abort(new Error('Benchmark cancelled'));
     } else if (data?.type === 'start') {
       const {signal} = controller;
-      run(data, {signal, onChild: (event) => postMessage({type: 'child', ...event})}).then(
+      run(data, {signal, onChild: (event) => postMessage({type: 'child', ...event}), onEvent: postMessage}).then(
         (results) => postMessage({type: 'results', results}),
         (error) =>
           postMessage(

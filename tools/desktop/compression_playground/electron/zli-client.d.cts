@@ -21,9 +21,15 @@ export interface ZliChildEvent {
   state: 'spawned' | 'exited';
 }
 
+export type ZliStage =
+  | {stage: 'benchmark'}
+  | {stage: 'train'}
+  | {stage: 'candidates'; candidate: number; candidateCount: number};
+
 export interface RunOptions {
   signal?: AbortSignal;
   onChild?: (event: ZliChildEvent) => void;
+  onStage?: (stage: ZliStage) => void;
   tempRoot?: string;
 }
 

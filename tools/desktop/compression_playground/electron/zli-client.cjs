@@ -181,13 +181,14 @@ async function trainedCandidatePaths(zliPath, inputPath, compressor, outputDirec
  * --level, so each candidate is re-benchmarked with the requested settings.
  * Aborting `signal` stops the running zli and rejects with `signal.reason`.
  * Scratch files go under `tempRoot`, which defaults to the OS temp directory.
+ * `onStage` hears which phase is starting: benchmark, train, or candidates.
  */
 async function runOpenZLBenchmark(
   zliPath,
   input,
   compressor,
   iterations,
-  {signal, onChild, tempRoot = os.tmpdir()} = {},
+  {signal, onChild, onStage, tempRoot = os.tmpdir()} = {},
 ) {
   const context = {signal, onChild};
   const workDirectory = await fs.mkdtemp(path.join(tempRoot, 'openzl-playground-'));
@@ -202,6 +203,7 @@ async function runOpenZLBenchmark(
     }
 
     if (!compressor.trainRequested) {
+      onStage?.({stage: 'benchmark'});
       return [
         await benchmark(
           zliPath,
@@ -214,6 +216,7 @@ async function runOpenZLBenchmark(
         ),
       ];
     }
+    onStage?.({stage: 'train'});
     const candidatePaths = await trainedCandidatePaths(
       zliPath,
       inputPath,
@@ -223,6 +226,7 @@ async function runOpenZLBenchmark(
     );
     const results = [];
     for (const [index, candidatePath] of candidatePaths.entries()) {
+      onStage?.({stage: 'candidates', candidate: index + 1, candidateCount: candidatePaths.length});
       results.push(
         await benchmark(
           zliPath,

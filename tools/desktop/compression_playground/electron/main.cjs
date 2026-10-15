@@ -103,6 +103,10 @@ function startRun(request, port) {
       } else {
         run.childPids.add(message.pid);
       }
+    } else if (message.type === 'progress' || message.type === 'partial') {
+      if (!run.finished) {
+        port.postMessage(message);
+      }
     } else if (['results', 'error', 'cancelled'].includes(message.type)) {
       disposeRun(run, message);
     }
