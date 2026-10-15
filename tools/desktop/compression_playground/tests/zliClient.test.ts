@@ -2,7 +2,7 @@
 
 // @vitest-environment node
 
-import {existsSync, readdirSync} from 'node:fs';
+import {existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
@@ -12,6 +12,60 @@ import {fakeZli, HANGING_ZLI, MALFORMED_ZLI, removeFakeZlis, UNORDERED_CANDIDATE
 afterEach(removeFakeZlis);
 
 describe('runOpenZLBenchmark', () => {
+  describe('on Windows, where zli reads paths in the ANSI code page', () => {
+    // 99999 stands in for a code page that could not be checked: unknown, or
+    // one this runtime cannot decode. Copying is safe, so it copies anyway.
+    it.each([1252, 99999])('runs zli on a copy of an input path code page %i may not represent', async (codePage) => {
+      const directory = mkdtempSync(join(tmpdir(), 'Rīgā-'));
+      const input = join(directory, 'input.bin');
+      writeFileSync(input, 'abc');
+      const seen = join(directory, 'seen.json');
+      const zli = fakeZli(`
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(seen)}, JSON.stringify({path: args[1], contents: fs.readFileSync(args[1], 'utf8')}));
+fs.writeFileSync(
+  args[args.indexOf('--output-csv') + 1],
+  'srcSize,compressedSize,compressionRatio,ctimeMs,dtimeMs,iters\\n3,2,1.5,1,1,1\\n',
+);
+`);
+      try {
+        const results = await runOpenZLBenchmark(zli, {path: input}, UNTRAINED, 1, {codePage});
+
+        expect(results).toHaveLength(1);
+        const read = JSON.parse(readFileSync(seen, 'utf8'));
+        expect(read.path).not.toBe(input);
+        expect(read.path).toMatch(/^[ -~]+$/);
+        expect(read.contents).toBe('abc');
+      } finally {
+        rmSync(directory, {recursive: true, force: true});
+      }
+    });
+
+    it('refuses a temp folder it cannot represent, which every file of the run lives under', async () => {
+      await expect(
+        runOpenZLBenchmark(fakeZli('process.exit(99);'), {path: '/data/input.bin'}, UNTRAINED, 4, {
+          codePage: 1252,
+          tempRoot: '/tmp/Ünïcödé-ā',
+        }),
+      ).rejects.toThrow('The temporary folder path contains');
+    });
+
+    it('lets through a path the code page can represent', async () => {
+      const results = await runOpenZLBenchmark(fakeZli(), {path: '/data/Алексей/input.bin'}, UNTRAINED, 4, {
+        codePage: 1251,
+      });
+
+      expect(results).toHaveLength(1);
+    });
+
+    it('does not check paths when it is not told a code page and is not on Windows', async () => {
+      const results = await runOpenZLBenchmark(fakeZli(), {path: '/data/Rīgā/input.bin'}, UNTRAINED, 4);
+
+      expect(results).toHaveLength(1);
+    });
+  });
+
   it('reads a CSV written with CRLF line endings and no path column', async () => {
     // On Windows zli writes CRLF, which would otherwise leave a CR on `iters`.
     process.env.FAKE_ZLI_EOL = '\r\n';
