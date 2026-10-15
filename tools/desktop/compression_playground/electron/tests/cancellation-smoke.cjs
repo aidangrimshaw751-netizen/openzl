@@ -16,7 +16,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const ZLI = path.resolve(__dirname, '..', 'native', 'build', 'Release', 'zli');
-const SCENARIOS = ['cancel', 'reload', 'kill-worker', 'quit'];
+const SCENARIOS = ['cancel', 'busy', 'reload', 'kill-worker', 'quit'];
 const GONE_WITHIN_MS = 4000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -96,6 +96,19 @@ async function harness(scenario, sample) {
     assert.deepEqual(result.stagesBeforeCancel, ['train']);
     result.outcome = await window.webContents.executeJavaScript('window.testRun.cancel(); window.testOutcome');
     assert.equal(result.outcome, 'Benchmark cancelled');
+  } else if (scenario === 'busy') {
+    const outcome = (js) => window.webContents.executeJavaScript(js);
+    result.second = await outcome(
+      `window.openzlDesktop.startBenchmark(${JSON.stringify(request)}).results.then(() => 'resolved', (error) => error.message)`,
+    );
+    assert.equal(result.second, 'A benchmark is already running');
+    result.outcome = await outcome('window.testRun.cancel(); window.testOutcome');
+    assert.equal(result.outcome, 'Benchmark cancelled');
+    const gzip = {input: {path: sample}, iterations: 1, compressors: [{id: 9, compressor: 'gzip', level: 1}]};
+    result.afterCancel = await outcome(
+      `window.openzlDesktop.startBenchmark(${JSON.stringify(gzip)}).results.then((results) => results.map((r) => r.label))`,
+    );
+    assert.deepEqual(result.afterCancel, ['gzip 1']);
   } else if (scenario === 'reload') {
     window.webContents.reload();
   } else if (scenario === 'kill-worker') {
