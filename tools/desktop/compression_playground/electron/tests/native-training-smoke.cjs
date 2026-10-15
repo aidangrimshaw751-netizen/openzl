@@ -33,10 +33,20 @@ async function main() {
   }
 }
 
+/** Like run(), but a row that could not be measured throws, saying why. */
+async function runAll(payload) {
+  const failures = [];
+  const results = await run(payload, {onEvent: (event) => event.type === 'failure' && failures.push(event.failure)});
+  if (failures.length > 0) {
+    throw new Error(failures.map((failure) => failure.message).join('\n'));
+  }
+  return results;
+}
+
 async function smoke(zliPath, zstdBenchmarkPath, temporaryDirectory) {
   // Trains on the sample the app bundles, so a change to it that zli cannot
   // train on fails here rather than in the installed app.
-  const results = await run({
+  const results = await runAll({
     zliPath,
     zstdBenchmarkPath,
     request: {
@@ -69,7 +79,7 @@ async function smoke(zliPath, zstdBenchmarkPath, temporaryDirectory) {
 
   const inputPath = path.join(temporaryDirectory, 'sample input.bin');
   fs.writeFileSync(inputPath, repeatedLineData());
-  const pathResults = await run({
+  const pathResults = await runAll({
     zliPath,
     zstdBenchmarkPath,
     request: {
@@ -95,7 +105,7 @@ async function smoke(zliPath, zstdBenchmarkPath, temporaryDirectory) {
 
   let zliFailure;
   try {
-    await run({
+    await runAll({
       zliPath,
       zstdBenchmarkPath,
       request: {

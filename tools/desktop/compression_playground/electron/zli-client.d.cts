@@ -24,7 +24,7 @@ export interface ZliChildEvent {
 
 export type ZliStage =
   | {stage: 'benchmark'}
-  | {stage: 'train'}
+  | {stage: 'train'; fraction?: number}
   | {stage: 'candidates'; candidate: number; candidateCount: number};
 
 export interface RunOptions {

@@ -3,13 +3,13 @@
 import type {
   BenchmarkEvent,
   BenchmarkRequest,
-  BenchmarkResult,
 } from '../../../desktop/compression_playground/electron/native-worker.cjs';
 import type {RunInput} from './benchmarkTypes.ts';
 
 export interface BenchmarkRun {
-  results: Promise<BenchmarkResult[]>;
-  /** Stops the run and its native processes; `results` then rejects. */
+  /** Settles once the run ends: resolves when it finished, rejects when it failed or was cancelled. */
+  done: Promise<void>;
+  /** Stops the run and its native processes; `done` then rejects. */
   cancel(): void;
 }
 

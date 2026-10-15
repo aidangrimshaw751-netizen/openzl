@@ -28,18 +28,18 @@ function fakeBridge(path = '/tmp/data.bin') {
     getPathForFile: () => path,
     startBenchmark: (request, onEvent) => {
       const cancel = vi.fn();
-      const results = new Promise<BenchmarkResult[]>((resolve, reject) => {
+      const done = new Promise<void>((resolve, reject) => {
         started.push({
           request,
           emit: (event) => onEvent?.(event),
           resolve: () => {
-            resolve([]);
+            resolve();
           },
           reject,
           cancel,
         });
       });
-      return {results, cancel};
+      return {done, cancel};
     },
   };
   return {bridge, started};
@@ -64,8 +64,7 @@ function configWith(
 function metrics(overrides: Partial<BenchmarkResult> = {}): BenchmarkResult {
   return {
     rowId: 0,
-    label: 'row',
-    candidate: 0,
+    candidate: null,
     iterations: 3,
     srcSize: 1000,
     compressedSize: 250,
@@ -157,7 +156,7 @@ describe('runDesktopBenchmark', () => {
     await settle();
   });
 
-  it('counts a job done when its row ends, and ranks a trained job’s candidates from 1', async () => {
+  it('counts a job done once its last measurement lands, and keeps the candidates the backend numbered', async () => {
     const {bridge, started} = fakeBridge();
     const {last} = run(
       configWith([
@@ -168,18 +167,18 @@ describe('runDesktopBenchmark', () => {
     );
     await settle();
     const [{emit, resolve}] = started;
-    const row = {rowIndex: 0, rowCount: 2, label: 'gzip 5'};
-
-    emit({type: 'progress', progress: {...row, rowId: 0, stage: 'benchmark'}});
     expect(last()).toMatchObject({status: 'running', completedJobs: 0, totalJobs: 2, step: null});
 
-    emit({type: 'partial', results: [metrics({rowId: 0, label: 'gzip 5'})]});
+    emit({type: 'result', result: metrics({rowId: 0})});
     expect(last()).toMatchObject({status: 'running', completedJobs: 1, step: null});
 
-    emit({
-      type: 'partial',
-      results: [0, 1, 2].map((candidate) => metrics({rowId: 1, candidate, ratio: 4 - candidate})),
-    });
+    for (const index of [1, 2]) {
+      emit({type: 'result', result: metrics({rowId: 1, candidate: {index, total: 3}, ratio: 5 - index})});
+    }
+    // Not done until its last candidate is in.
+    expect(last()).toMatchObject({status: 'running', completedJobs: 1});
+    emit({type: 'result', result: metrics({rowId: 1, candidate: {index: 3, total: 3}, ratio: 2})});
+    expect(last()).toMatchObject({status: 'running', completedJobs: 2});
     resolve();
     await settle();
 
@@ -195,18 +194,38 @@ describe('runDesktopBenchmark', () => {
       [1, 6, {index: 2, total: 3}],
       [1, 6, {index: 3, total: 3}],
     ]);
-    // The measurement itself crosses unchanged.
+    // The measurement itself crosses unchanged, without the wire's row id.
     expect(state.results[0]).toMatchObject({srcSize: 1000, compressedSize: 250, ratio: 4, compressMBps: 100});
+    expect(state.results[0]).not.toHaveProperty('rowId');
+  });
+
+  it('records a row the backend could not measure as a failure, and runs on', async () => {
+    const {bridge, started} = fakeBridge();
+    const {last} = run(configWith([OPENZL, {rowId: 2, compressor: 'gzip', levels: [5]}]), bridge);
+    await settle();
+    const [{emit, resolve}] = started;
+
+    emit({type: 'failure', failure: {rowId: 0, candidate: null, message: "Profile not found: 'serial'"}});
+    expect(last()).toMatchObject({status: 'running', completedJobs: 1});
+    emit({type: 'result', result: metrics({rowId: 1})});
+    resolve();
+    await settle();
+
+    const state = last();
+    expect(state.status).toBe('completed');
+    if (state.status !== 'completed') {
+      return;
+    }
+    expect(state.failures.map((failure) => [failure.job.rowId, failure.candidate, failure.message])).toEqual([
+      [1, null, "Profile not found: 'serial'"],
+    ]);
+    expect(state.results.map((result) => result.job.rowId)).toEqual([2]);
   });
 
   it('has no fraction to give while training, whose length nobody knows', async () => {
     const {bridge, started} = fakeBridge();
     const {last, states} = run(configWith([{...OPENZL, training: {paretoFrontier: true, candidates: 10}}]), bridge);
     await settle();
-    const [{emit, resolve}] = started;
-    const row = {rowId: 0, rowIndex: 0, rowCount: 1, label: 'OpenZL serial'};
-
-    emit({type: 'progress', progress: {...row, stage: 'train'}});
     expect(last()).toMatchObject({status: 'running', completedJobs: 0, step: null});
 
     // Nothing moves on its own while it trains: there is no limit to count up to.
@@ -214,20 +233,19 @@ describe('runDesktopBenchmark', () => {
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(states).toHaveLength(count);
 
-    resolve();
+    started[0].resolve();
     await settle();
   });
 
-  it('moves the bar across the candidates, counted from the first', async () => {
+  it('moves the bar by the steps the backend reports', async () => {
     const {bridge, started} = fakeBridge();
     const {last} = run(configWith([{...OPENZL, training: {paretoFrontier: true, candidates: 10}}]), bridge);
     await settle();
     const [{emit, resolve}] = started;
-    const row = {rowId: 0, rowIndex: 0, rowCount: 1, label: 'OpenZL serial'};
 
-    emit({type: 'progress', progress: {...row, stage: 'candidates', candidate: 1, candidateCount: 4}});
+    emit({type: 'step', fraction: 0});
     expect(last()).toMatchObject({step: 0});
-    emit({type: 'progress', progress: {...row, stage: 'candidates', candidate: 3, candidateCount: 4}});
+    emit({type: 'step', fraction: 0.5});
     expect(last()).toMatchObject({step: 0.5});
 
     resolve();
@@ -240,12 +258,12 @@ describe('runDesktopBenchmark', () => {
     await settle();
     const [{emit, reject}] = started;
 
-    emit({type: 'partial', results: [metrics({rowId: 0})]});
-    reject(new Error('zli exited with code 1'));
+    emit({type: 'result', result: metrics({rowId: 0})});
+    reject(new Error('Native benchmark process exited unexpectedly (code 1)'));
     await settle();
 
     const state = last();
-    expect(state).toMatchObject({status: 'error', message: 'zli exited with code 1'});
+    expect(state).toMatchObject({status: 'error', message: 'Native benchmark process exited unexpectedly (code 1)'});
     expect(state.status === 'error' && state.results).toHaveLength(1);
   });
 
@@ -311,7 +329,7 @@ describe('runDesktopBenchmark', () => {
     await settle();
     const [{emit, reject, cancel}] = started;
 
-    emit({type: 'partial', results: [metrics({rowId: 99})]});
+    emit({type: 'result', result: metrics({rowId: 99})});
 
     expect(last()).toMatchObject({status: 'error', message: expect.stringContaining('did not ask for')});
     expect(cancel).toHaveBeenCalledTimes(1);
@@ -320,7 +338,7 @@ describe('runDesktopBenchmark', () => {
     // replace the error that ended the run.
     const count = states.length;
     reject(new Error('Benchmark cancelled'));
-    emit({type: 'partial', results: [metrics({rowId: 0})]});
+    emit({type: 'result', result: metrics({rowId: 0})});
     await settle();
     expect(states).toHaveLength(count);
     expect(last()).toMatchObject({message: expect.stringContaining('did not ask for')});

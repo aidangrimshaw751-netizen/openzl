@@ -119,13 +119,58 @@ fs.writeFileSync(
         onStage: (stage) => trained.push(stage),
       },
     );
-    expect(trained).toEqual([{stage: 'train'}, {stage: 'candidates', candidate: 1, candidateCount: 1}]);
+    // Training reports what zli's progress bar shows, read off its stderr.
+    expect(trained).toEqual([
+      {stage: 'train'},
+      {stage: 'train', fraction: 0},
+      {stage: 'train', fraction: 0.5},
+      {stage: 'train', fraction: 1},
+      {stage: 'candidates', candidate: 1, candidateCount: 1},
+    ]);
 
     const untrained: ZliStage[] = [];
     await runOpenZLBenchmark(fakeZli(), {path: inputFile(new Uint8Array([1]))}, UNTRAINED, 1, {
       onStage: (stage) => untrained.push(stage),
     });
     expect(untrained).toEqual([{stage: 'benchmark'}]);
+  });
+
+  it('reports only the fatal error when training fails, not its progress', async () => {
+    const failing = fakeZli(`
+process.stderr.write('Using all provided training samples, total size 1\\n');
+process.stderr.write('[==--] Training ACE graph 1 / 1: ACE progress\\n');
+process.stderr.write('I/O Exception:\\n\\tFailed to open input file\\n');
+process.exit(1);
+`);
+
+    await expect(
+      runOpenZLBenchmark(failing, {path: inputFile(new Uint8Array([1]))}, {...UNTRAINED, trainRequested: true}, 1),
+    ).rejects.toThrow(/^I\/O Exception:\n\tFailed to open input file$/);
+  });
+
+  it('reports the signal, not its last INFO line, when zli is killed mid-training', async () => {
+    // A crash or an out-of-memory kill leaves no error heading.
+    const killed = fakeZli(`
+process.stderr.write('Using all provided training samples, total size 1\\n');
+process.stderr.write('[==--] Training ACE graph 1 / 1: ACE progress\\n');
+process.kill(process.pid, 'SIGKILL');
+`);
+
+    await expect(
+      runOpenZLBenchmark(killed, {path: inputFile(new Uint8Array([1]))}, {...UNTRAINED, trainRequested: true}, 1),
+    ).rejects.toThrow('zli exited unexpectedly (signal SIGKILL)');
+  });
+
+  it('reports a one-line error zli prints without detail', async () => {
+    const failing = fakeZli(`
+process.stderr.write('[==--] Training ACE graph 1 / 1: ACE progress\\n');
+process.stderr.write('No command specified\\n');
+process.exit(1);
+`);
+
+    await expect(
+      runOpenZLBenchmark(failing, {path: inputFile(new Uint8Array([1]))}, {...UNTRAINED, trainRequested: true}, 1),
+    ).rejects.toThrow(/^No command specified$/);
   });
 
   it('kills a zli that ignores SIGTERM when the run is aborted, and cleans up', async () => {

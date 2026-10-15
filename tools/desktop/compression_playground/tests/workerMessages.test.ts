@@ -5,8 +5,7 @@ import {parseWorkerMessage} from '../electron/worker-messages.cjs';
 
 const RESULT = {
   rowId: 1,
-  label: 'OpenZL serial',
-  candidate: 0,
+  candidate: {index: 1, total: 3},
   iterations: 5,
   srcSize: 100,
   compressedSize: 40,
@@ -21,31 +20,20 @@ describe('parseWorkerMessage', () => {
   it('accepts every message type and strips unknown keys', () => {
     const messages = [
       {type: 'child', pid: 42, state: 'spawned'},
-      {type: 'progress', progress: {rowId: 1, rowIndex: 0, rowCount: 2, label: 'OpenZL serial', stage: 'benchmark'}},
-      {type: 'progress', progress: {rowId: 1, rowIndex: 0, rowCount: 2, label: 'x', stage: 'train'}},
-      {
-        type: 'progress',
-        progress: {
-          rowId: 1,
-          rowIndex: 0,
-          rowCount: 2,
-          label: 'x',
-          stage: 'candidates',
-          candidate: 1,
-          candidateCount: 3,
-        },
-      },
-      {type: 'partial', results: [RESULT]},
-      {type: 'results', results: [RESULT]},
-      {type: 'error', message: 'zli exited unexpectedly'},
+      {type: 'step', fraction: 0.5},
+      {type: 'result', result: RESULT},
+      {type: 'result', result: {...RESULT, candidate: null}},
+      {type: 'failure', failure: {rowId: 1, candidate: null, message: 'zli exited with code 1'}},
+      {type: 'finished'},
+      {type: 'failed', message: 'Native benchmark process exited unexpectedly'},
       {type: 'cancelled'},
     ];
     for (const message of messages) {
       expect(parseWorkerMessage(message)).toEqual(message);
     }
-    expect(parseWorkerMessage({type: 'results', results: [{...RESULT, secret: 'x'}], extra: 1})).toEqual({
-      type: 'results',
-      results: [RESULT],
+    expect(parseWorkerMessage({type: 'result', result: {...RESULT, secret: 'x'}, extra: 1})).toEqual({
+      type: 'result',
+      result: RESULT,
     });
   });
 
@@ -55,16 +43,14 @@ describe('parseWorkerMessage', () => {
       [{type: 'shell', command: 'rm'}, 'invalid message (type:'],
       [{type: 'child', pid: 0, state: 'spawned'}, '(pid:'],
       [{type: 'child', pid: 42, state: 'zombie'}, '(state:'],
-      [{type: 'results', results: [{...RESULT, srcSize: Number.NaN}]}, '(results.0.srcSize:'],
-      [{type: 'results', results: [{...RESULT, compressMs: -1}]}, '(results.0.compressMs:'],
-      [
-        {
-          type: 'progress',
-          progress: {rowId: 1, rowIndex: 0, rowCount: 1, label: 'x', stage: 'candidates', candidate: 1},
-        },
-        '(progress.candidateCount:',
-      ],
-      [{type: 'error'}, '(message:'],
+      [{type: 'result', result: {...RESULT, srcSize: Number.NaN}}, '(result.srcSize:'],
+      [{type: 'result', result: {...RESULT, compressMs: -1}}, '(result.compressMs:'],
+      // Counted from 1, as the browser counts them.
+      [{type: 'result', result: {...RESULT, candidate: {index: 0, total: 3}}}, '(result.candidate.index:'],
+      [{type: 'result', result: {...RESULT, candidate: {index: 4, total: 3}}}, '(result.candidate.index:'],
+      [{type: 'step', fraction: 1.5}, '(fraction:'],
+      [{type: 'failure', failure: {rowId: 1, candidate: null}}, '(failure.message:'],
+      [{type: 'failed'}, '(message:'],
     ];
     for (const [message, expected] of cases) {
       expect(() => parseWorkerMessage(message)).toThrow(expected);

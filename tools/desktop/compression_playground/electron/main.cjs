@@ -98,7 +98,7 @@ function startRun(request, port) {
   try {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'openzl-run-'));
   } catch (error) {
-    port.postMessage({type: 'error', message: `Could not create a scratch directory: ${error.message}`});
+    port.postMessage({type: 'failed', message: `Could not create a scratch directory: ${error.message}`});
     port.close();
     return;
   }
@@ -119,7 +119,7 @@ function startRun(request, port) {
     try {
       message = parseWorkerMessage(rawMessage);
     } catch (error) {
-      disposeRun(run, {type: 'error', message: error.message});
+      disposeRun(run, {type: 'failed', message: error.message});
       return;
     }
     if (message.type === 'child') {
@@ -131,23 +131,23 @@ function startRun(request, port) {
       } else {
         run.childPids.add(message.pid);
       }
-    } else if (message.type === 'progress' || message.type === 'partial') {
+    } else if (message.type === 'step' || message.type === 'result' || message.type === 'failure') {
       if (!run.finished) {
         port.postMessage(message);
       }
-    } else if (['results', 'error', 'cancelled'].includes(message.type)) {
+    } else if (['finished', 'failed', 'cancelled'].includes(message.type)) {
       disposeRun(run, message);
     }
   });
   worker.once('error', (type, location) =>
-    disposeRun(run, {type: 'error', message: `Native benchmark process failed (${type} at ${location})`}),
+    disposeRun(run, {type: 'failed', message: `Native benchmark process failed (${type} at ${location})`}),
   );
   // A worker that exits while cancelling may not have reported it first.
   worker.once('exit', (code) =>
     disposeRun(
       run,
       run.watchdog === undefined
-        ? {type: 'error', message: `Native benchmark process exited unexpectedly (code ${code})`}
+        ? {type: 'failed', message: `Native benchmark process exited unexpectedly (code ${code})`}
         : {type: 'cancelled'},
     ),
   );
@@ -162,7 +162,7 @@ function startRun(request, port) {
       });
     } catch (error) {
       // The worker died between spawning and receiving its start message.
-      disposeRun(run, {type: 'error', message: `Could not start the benchmark process: ${error.message}`});
+      disposeRun(run, {type: 'failed', message: `Could not start the benchmark process: ${error.message}`});
     }
   });
 
@@ -247,7 +247,7 @@ function registerIpc() {
       }
       request = resolveInput(validateRequest(rawRequest));
     } catch (error) {
-      port.postMessage({type: 'error', message: error.message});
+      port.postMessage({type: 'failed', message: error.message});
       port.close();
       return;
     }

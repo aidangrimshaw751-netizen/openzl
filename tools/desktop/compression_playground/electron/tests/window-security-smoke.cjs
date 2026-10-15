@@ -38,7 +38,7 @@ async function mainWindow() {
 
 function rendererBenchmark(window, request) {
   return window.webContents.executeJavaScript(
-    `window.openzlDesktop.startBenchmark(${JSON.stringify(request)}).results.then(() => 'resolved', (error) => error.message)`,
+    `window.openzlDesktop.startBenchmark(${JSON.stringify(request)}).done.then(() => 'resolved', (error) => error.message)`,
   );
 }
 

@@ -9,7 +9,7 @@ import {FAKE_ZSTD_BENCHMARK, fakeZli, inputFile, removeFakeZlis} from './fakeZli
 afterEach(removeFakeZlis);
 
 describe('run', () => {
-  it('reports each row and stage as it starts, and each row’s results as it ends', async () => {
+  it('reports in the browser worker’s vocabulary: steps through training and per candidate, then a result per measurement', async () => {
     const events: BenchmarkEvent[] = [];
     const results = await run(
       {
@@ -38,26 +38,69 @@ describe('run', () => {
 
     expect(
       events.map((event) =>
-        event.type === 'progress' ? event.progress : {partial: event.results.map((r) => r.label)},
+        event.type === 'result' ? {result: event.result.rowId, candidate: event.result.candidate} : event,
       ),
     ).toEqual([
-      {rowId: 1, rowIndex: 0, rowCount: 3, label: 'OpenZL serial', stage: 'train'},
-      {
-        rowId: 1,
-        rowIndex: 0,
-        rowCount: 3,
-        label: 'OpenZL serial',
-        stage: 'candidates',
-        candidate: 1,
-        candidateCount: 1,
-      },
-      {partial: ['OpenZL serial']},
-      {rowId: 2, rowIndex: 1, rowCount: 3, label: 'zstd 3', stage: 'benchmark'},
-      {partial: ['zstd 3']},
-      {rowId: 3, rowIndex: 2, rowCount: 3, label: 'gzip 5', stage: 'benchmark'},
-      {partial: ['gzip 5']},
+      {type: 'step', fraction: 0},
+      {type: 'step', fraction: 0.5},
+      {type: 'step', fraction: 1},
+      {type: 'step', fraction: 0},
+      {result: 1, candidate: {index: 1, total: 1}},
+      {result: 2, candidate: null},
+      {result: 3, candidate: null},
     ]);
-    expect(results.map((result) => result.label)).toEqual(['OpenZL serial', 'zstd 3', 'gzip 5']);
+    expect(results.map((result) => result.rowId)).toEqual([1, 2, 3]);
+  });
+
+  it('reports a row it cannot measure as a failure and goes on to the next', async () => {
+    const events: BenchmarkEvent[] = [];
+    const results = await run(
+      {
+        zliPath: fakeZli(),
+        zstdBenchmarkPath: fakeZli(
+          "process.stderr.write('Cannot open input file\\n'); process.exit(1);",
+          'zstd-benchmark',
+        ),
+        request: {
+          input: {path: inputFile(new Uint8Array(100))},
+          iterations: 1,
+          compressors: [
+            {id: 1, compressor: 'zstd', level: 3},
+            {id: 2, compressor: 'gzip', level: 5},
+          ],
+        },
+      },
+      {onEvent: (event) => events.push(event)},
+    );
+
+    expect(events.map((event) => event.type)).toEqual(['failure', 'result']);
+    expect(events[0]).toEqual({
+      type: 'failure',
+      failure: {rowId: 1, candidate: null, message: expect.stringContaining('Cannot open input file')},
+    });
+    expect(results.map((result) => result.rowId)).toEqual([2]);
+  });
+
+  it('stops at a cancel rather than reporting it as a failed row', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('Benchmark cancelled'));
+    const events: BenchmarkEvent[] = [];
+
+    await expect(
+      run(
+        {
+          zliPath: fakeZli(),
+          zstdBenchmarkPath: fakeZli(FAKE_ZSTD_BENCHMARK, 'zstd-benchmark'),
+          request: {
+            input: {path: inputFile(new Uint8Array(100))},
+            iterations: 1,
+            compressors: [{id: 1, compressor: 'gzip', level: 5}],
+          },
+        },
+        {signal: controller.signal, onEvent: (event) => events.push(event)},
+      ),
+    ).rejects.toThrow('Benchmark cancelled');
+    expect(events).toEqual([]);
   });
 
   it('measures zstd with zstd-benchmark and derives throughput from its timings', async () => {

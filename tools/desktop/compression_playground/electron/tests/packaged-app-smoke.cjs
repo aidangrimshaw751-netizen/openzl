@@ -187,37 +187,42 @@ async function main() {
             }
             await new Promise((resolve) => setTimeout(resolve, 50));
           }
-          const events = [];
-          const results = await window.openzlDesktop.startBenchmark({
+          const benchmark = async (request) => {
+            const events = [];
+            await window.openzlDesktop.startBenchmark(request, (event) => events.push(event)).done;
+            return events;
+          };
+          const events = await benchmark({
             input: {path: ${JSON.stringify(sample)}},
             iterations: 1,
             compressors: [
               {id: 1, compressor: 'OpenZL', level: 1, profile: 'serial', trainRequested: false, candidates: 10, profileArg: ''},
               {id: 2, compressor: 'zstd', level: 3},
             ],
-          }, (event) => events.push(event.type === 'progress' ? event.progress.label + ': ' + event.progress.stage : 'partial: ' + event.results.map((r) => r.label).join())).results;
+          });
           // The installer's own copy, found by the main process from the name alone.
-          const sampleResults = await window.openzlDesktop.startBenchmark({
+          const sampleEvents = await benchmark({
             input: {sample: true},
             iterations: 1,
             compressors: [{id: 3, compressor: 'gzip', level: 1}],
-          }).results;
+          });
           return {
             origin: location.origin,
-            labels: results.map((r) => r.label),
-            srcSizes: results.map((r) => r.srcSize),
-            sampleSrcSizes: sampleResults.map((r) => r.srcSize),
-            events,
+            events: events.map((event) => event.type + ' ' + event.result?.rowId),
+            srcSizes: events.map((event) => event.result?.srcSize),
+            candidates: events.map((event) => event.result?.candidate),
+            sampleSrcSizes: sampleEvents.map((event) => event.result?.srcSize),
           };
         })()`,
       );
       const size = fs.statSync(sample).size;
+      // Neither row trains, so there are no steps: one result per row, in order.
       assert.deepEqual(page, {
         origin: 'app://bundle',
-        labels: ['OpenZL serial', 'zstd 3'],
+        events: ['result 1', 'result 2'],
         srcSizes: [size, size],
+        candidates: [null, null],
         sampleSrcSizes: [SAMPLE_SIZE],
-        events: ['OpenZL serial: benchmark', 'partial: OpenZL serial', 'zstd 3: benchmark', 'partial: zstd 3'],
       });
       assert.ok(!app.output.stderr.includes('Debugger listening'), '--inspect opened a debugger');
       process.stdout.write(

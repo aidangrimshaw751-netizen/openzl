@@ -48,8 +48,43 @@ function terminate(child) {
   child.once('exit', () => clearTimeout(escalate));
 }
 
-/** Runs a native benchmark binary, which reports failures on stderr. */
-function runNative(executable, args, {signal, onChild}) {
+// At --verbose 3, zli prints a progress bar on stderr for each step of
+// training, one line per redraw on a pipe:
+// `[=====---------------------------------------------] Training ACE graph 1 / 1: ACE progress`.
+const PROGRESS_LINE = /^\[([=-]+)\] /;
+
+/** The fraction a zli progress line shows, or undefined for any other line. */
+function progressFraction(line) {
+  const bar = PROGRESS_LINE.exec(line)?.[1];
+  return bar === undefined ? undefined : bar.replaceAll('-', '').length / bar.length;
+}
+
+/**
+ * What zli printed about why it failed. Its progress and other INFO lines come
+ * first; a fatal error comes last, usually as a heading and its tab-indented
+ * detail (`I/O Exception:` then `\tFailed to open input file ...`), otherwise
+ * as one line. Empty when zli was killed by a signal (a crash, or out of
+ * memory) and printed no heading: whatever INFO line came last says nothing
+ * about that, so the signal is reported instead.
+ */
+function failureFromVerboseStderr(stderr, killed) {
+  const lines = stderr
+    .trim()
+    .split(/\r?\n/)
+    .filter((line) => progressFraction(line) === undefined);
+  const heading = lines.findLastIndex((line, index) => !line.startsWith('\t') && lines[index + 1]?.startsWith('\t'));
+  if (heading !== -1) {
+    return lines.slice(heading).join('\n');
+  }
+  return killed ? '' : (lines.at(-1) ?? '');
+}
+
+/**
+ * Runs a native benchmark binary, which reports failures on stderr. With
+ * `onProgress`, stderr is zli's at --verbose 3: each progress line is reported
+ * as a fraction, and only the fatal error is kept as the failure message.
+ */
+function runNative(executable, args, {signal, onChild, onProgress}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason);
@@ -85,9 +120,24 @@ function runNative(executable, args, {signal, onChild}) {
       onChild?.({pid: child.pid, state: 'spawned'});
     }
 
+    // The end of the last chunk, until the rest of its line arrives.
+    let partialLine = '';
     child.stderr.on('data', (chunk) => {
-      process.stderr.write(chunk);
       stderr += chunk;
+      if (onProgress === undefined) {
+        process.stderr.write(chunk);
+        return;
+      }
+      const lines = (partialLine + chunk).split(/\r?\n/);
+      partialLine = lines.pop();
+      for (const line of lines) {
+        const fraction = progressFraction(line);
+        if (fraction === undefined) {
+          process.stderr.write(`${line}\n`);
+        } else {
+          onProgress(fraction);
+        }
+      }
     });
     child.once('error', (error) => {
       cleanup();
@@ -95,6 +145,10 @@ function runNative(executable, args, {signal, onChild}) {
     });
     child.once('close', (code, exitSignal) => {
       cleanup();
+      // A last line with no newline after it, which the 'data' handler held back.
+      if (partialLine !== '' && progressFraction(partialLine) === undefined) {
+        process.stderr.write(`${partialLine}\n`);
+      }
       if (child.pid !== undefined) {
         onChild?.({pid: child.pid, state: 'exited'});
       }
@@ -106,7 +160,7 @@ function runNative(executable, args, {signal, onChild}) {
         return;
       }
       if (code !== 0) {
-        const detail = stderr.trim();
+        const detail = onProgress === undefined ? stderr.trim() : failureFromVerboseStderr(stderr, exitSignal !== null);
         fail(
           new Error(
             detail !== ''
@@ -123,8 +177,9 @@ function runNative(executable, args, {signal, onChild}) {
 }
 
 function runZli(zliPath, args, context) {
-  // --verbose 1 limits stderr to errors, so a failure message can be shown as-is.
-  return runNative(zliPath, [...args, '--verbose', '1'], context);
+  // --verbose 1 limits stderr to errors, so a failure message can be shown
+  // as-is; 3 adds the progress lines `onProgress` reads.
+  return runNative(zliPath, [...args, '--verbose', context.onProgress === undefined ? '1' : '3'], context);
 }
 
 function profileArguments(compressor) {
@@ -237,7 +292,8 @@ async function inWorkDirectory(input, {tempRoot = os.tmpdir(), codePage} = {}, b
  * --level, so each candidate is re-benchmarked with the requested settings.
  * Aborting `signal` stops the running zli and rejects with `signal.reason`.
  * Scratch files go under `tempRoot`, which defaults to the OS temp directory.
- * `onStage` hears which phase is starting: benchmark, train, or candidates.
+ * `onStage` hears which phase is starting: benchmark, train, or candidates;
+ * then, while training, each fraction zli's progress bar shows.
  */
 function runOpenZLBenchmark(
   zliPath,
@@ -268,7 +324,7 @@ function runOpenZLBenchmark(
       inputPath,
       compressor,
       path.join(workDirectory, 'candidates'),
-      context,
+      {...context, onProgress: (fraction) => onStage?.({stage: 'train', fraction})},
     );
     const results = [];
     for (const [index, candidatePath] of candidatePaths.entries()) {

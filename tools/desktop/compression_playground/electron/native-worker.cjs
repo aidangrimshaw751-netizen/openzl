@@ -51,58 +51,67 @@ function withThroughput(result) {
   };
 }
 
-function rowLabel(compressor) {
-  return compressor.compressor === 'OpenZL'
-    ? `OpenZL ${compressor.profile}`
-    : `${compressor.compressor} ${compressor.level}`;
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function measure({zliPath, zstdBenchmarkPath, request, tempRoot}, compressor, readInput, options) {
+  if (compressor.compressor === 'OpenZL') {
+    const measurements = await runOpenZLBenchmark(zliPath, request.input, compressor, request.iterations, {
+      ...options,
+      tempRoot,
+    });
+    return measurements.map((measurement, index) => ({
+      ...withThroughput(measurement),
+      rowId: compressor.id,
+      candidate: compressor.trainRequested ? {index: index + 1, total: measurements.length} : null,
+    }));
+  }
+  const measurement =
+    compressor.compressor === 'zstd'
+      ? await runZstdBenchmark(zstdBenchmarkPath, request.input, compressor.level, request.iterations, {
+          ...options,
+          tempRoot,
+        })
+      : await benchmarkGzip(readInput(), compressor.level, request.iterations, options.signal);
+  return [{...withThroughput(measurement), rowId: compressor.id, candidate: null}];
 }
 
 /**
- * Runs every row in order. `onEvent` receives {type: 'progress', progress} as
- * each row and stage starts, and {type: 'partial', results} as each row ends.
+ * Runs every row in order, reporting as the browser's worker does: `step` with
+ * each fraction training reports and as each trained candidate starts, then a
+ * `result` per measurement, or a
+ * `failure` for a row that could not be measured. A failed row does not stop
+ * the run; only cancelling does.
  */
-async function run({zliPath, zstdBenchmarkPath, request, tempRoot}, {signal, onChild, onEvent} = {}) {
+async function run(payload, {signal, onChild, onEvent} = {}) {
   const results = [];
   let input;
-
-  for (const [rowIndex, compressor] of request.compressors.entries()) {
-    signal?.throwIfAborted();
-    const label = rowLabel(compressor);
-    const row = {rowId: compressor.id, rowIndex, rowCount: request.compressors.length, label};
-    const onStage = (stage) => onEvent?.({type: 'progress', progress: {...row, ...stage}});
-    const rowResults = [];
-    if (compressor.compressor === 'OpenZL') {
-      const nativeResults = await runOpenZLBenchmark(zliPath, request.input, compressor, request.iterations, {
-        signal,
-        onChild,
-        onStage,
-        tempRoot,
-      });
-      for (let index = 0; index < nativeResults.length; index += 1) {
-        const suffix = nativeResults.length > 1 ? ` candidate ${index + 1}` : '';
-        rowResults.push({
-          ...withThroughput(nativeResults[index]),
-          rowId: compressor.id,
-          candidate: index,
-          label: `${label}${suffix}`,
-        });
-      }
-    } else if (compressor.compressor === 'zstd') {
-      const result = await runZstdBenchmark(zstdBenchmarkPath, request.input, compressor.level, request.iterations, {
-        signal,
-        onChild,
-        onStage,
-        tempRoot,
-      });
-      rowResults.push({...withThroughput(result), rowId: compressor.id, candidate: 0, label});
-    } else {
-      onStage({stage: 'benchmark'});
-      input ??= fs.readFileSync(request.input.path);
-      const result = await benchmarkGzip(input, compressor.level, request.iterations, signal);
-      rowResults.push({...withThroughput(result), rowId: compressor.id, candidate: 0, label});
+  const readInput = () => (input ??= fs.readFileSync(payload.request.input.path));
+  const onStage = (stage) => {
+    if (stage.stage === 'train' && stage.fraction !== undefined) {
+      onEvent?.({type: 'step', fraction: stage.fraction});
+    } else if (stage.stage === 'candidates') {
+      onEvent?.({type: 'step', fraction: (stage.candidate - 1) / stage.candidateCount});
     }
-    results.push(...rowResults);
-    onEvent?.({type: 'partial', results: rowResults});
+  };
+
+  for (const compressor of payload.request.compressors) {
+    signal?.throwIfAborted();
+    let measured;
+    try {
+      measured = await measure(payload, compressor, readInput, {signal, onChild, onStage});
+    } catch (error) {
+      if (signal?.aborted) {
+        throw error;
+      }
+      onEvent?.({type: 'failure', failure: {rowId: compressor.id, candidate: null, message: messageOf(error)}});
+      continue;
+    }
+    for (const result of measured) {
+      results.push(result);
+      onEvent?.({type: 'result', result});
+    }
   }
   return results;
 }
@@ -110,9 +119,9 @@ async function run({zliPath, zstdBenchmarkPath, request, tempRoot}, {signal, onC
 /**
  * Worker protocol. From the main process: {type: 'start', zliPath,
  * zstdBenchmarkPath, request, tempRoot}, then optionally {type: 'cancel'}. To
- * it: {type: 'child', pid, state} for every native process, run() events ({type: 'progress'} and {type: 'partial'}),
- * then exactly one of {type: 'results', results},
- * {type: 'error', message}, or {type: 'cancelled'}.
+ * it: {type: 'child', pid, state} for every native process, run()'s events,
+ * then exactly one of {type: 'finished'}, {type: 'failed', message}, or
+ * {type: 'cancelled'}.
  */
 function serve(parentPort) {
   const controller = new AbortController();
@@ -123,14 +132,14 @@ function serve(parentPort) {
     } else if (data?.type === 'start') {
       const {signal} = controller;
       run(data, {signal, onChild: (event) => postMessage({type: 'child', ...event}), onEvent: postMessage}).then(
-        (results) => postMessage({type: 'results', results}),
+        () => postMessage({type: 'finished'}),
         (error) =>
           postMessage(
             // Only a rejection the abort caused: a run can fail on its own
             // just as a cancel arrives, and its error should still be seen.
             signal.aborted && error === signal.reason
               ? {type: 'cancelled'}
-              : {type: 'error', message: error instanceof Error ? error.message : String(error)},
+              : {type: 'failed', message: messageOf(error)},
           ),
       );
     }
