@@ -45,6 +45,6 @@ export type BenchmarkEvent =
   | {type: 'partial'; results: BenchmarkResult[]};
 
 export function run(
-  payload: {zliPath: string; request: BenchmarkRequest; tempRoot?: string},
+  payload: {zliPath: string; zstdBenchmarkPath: string; request: BenchmarkRequest; tempRoot?: string},
   options?: {signal?: AbortSignal; onChild?: (event: ZliChildEvent) => void; onEvent?: (event: BenchmarkEvent) => void},
 ): Promise<BenchmarkResult[]>;

@@ -68,6 +68,28 @@ require('node:fs').writeFileSync(
 );
 `;
 
+/**
+ * Stands in for zstd-benchmark. It fails unless called as
+ * `<input> --level <n> --num-iters <n> --output-csv <path>`, then writes the
+ * input's size as srcSize and the level as compressedSize, so a test can see
+ * both arrived.
+ */
+export const FAKE_ZSTD_BENCHMARK = `
+const fs = require('node:fs');
+const [input, ...flags] = process.argv.slice(2);
+const names = flags.filter((_, index) => index % 2 === 0);
+if (JSON.stringify(names) !== JSON.stringify(['--level', '--num-iters', '--output-csv'])) {
+  process.stderr.write('Unexpected arguments: ' + process.argv.slice(2).join(' ') + '\\n');
+  process.exit(2);
+}
+const [level, iters, csv] = flags.filter((_, index) => index % 2 === 1);
+fs.writeFileSync(
+  csv,
+  'srcSize,compressedSize,compressionRatio,ctimeMs,dtimeMs,iters\\n' +
+    fs.statSync(input).size + ',' + level + ',1,2,1,' + iters + '\\n',
+);
+`;
+
 export const UNTRAINED = {profile: 'serial', profileArg: '', level: 6, trainRequested: false, candidates: 10};
 
 const fakeZliDirectories: string[] = [];
@@ -79,11 +101,11 @@ export function removeFakeZlis(): void {
   }
 }
 
-/** Writes `script` as an executable zli stand-in and returns its path. */
-export function fakeZli(script = FAKE_ZLI): string {
+/** Writes `script` as an executable stand-in called `name` and returns its path. */
+export function fakeZli(script = FAKE_ZLI, name = 'zli'): string {
   const workDirectory = mkdtempSync(join(tmpdir(), 'zli-client-test-'));
   fakeZliDirectories.push(workDirectory);
-  const zliPath = join(workDirectory, 'zli');
+  const zliPath = join(workDirectory, name);
   writeFileSync(zliPath, `#!${process.execPath}\n${script}`);
   chmodSync(zliPath, 0o755);
   return zliPath;
