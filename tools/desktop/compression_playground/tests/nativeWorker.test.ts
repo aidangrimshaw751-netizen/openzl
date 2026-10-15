@@ -4,7 +4,7 @@
 
 import {afterEach, describe, expect, it} from 'vitest';
 import {run, type BenchmarkEvent} from '../electron/native-worker.cjs';
-import {FAKE_ZSTD_BENCHMARK, fakeZli, removeFakeZlis} from './fakeZli.ts';
+import {FAKE_ZSTD_BENCHMARK, fakeZli, inputFile, removeFakeZlis} from './fakeZli.ts';
 
 afterEach(removeFakeZlis);
 
@@ -16,7 +16,7 @@ describe('run', () => {
         zliPath: fakeZli(),
         zstdBenchmarkPath: fakeZli(FAKE_ZSTD_BENCHMARK, 'zstd-benchmark'),
         request: {
-          input: {data: new TextEncoder().encode('OpenZL '.repeat(1000))},
+          input: {path: inputFile(new TextEncoder().encode('OpenZL '.repeat(1000)))},
           iterations: 2,
           compressors: [
             {
@@ -65,7 +65,7 @@ describe('run', () => {
       zliPath: fakeZli(),
       zstdBenchmarkPath: fakeZli(FAKE_ZSTD_BENCHMARK, 'zstd-benchmark'),
       request: {
-        input: {data: new Uint8Array(4000)},
+        input: {path: inputFile(new Uint8Array(4000))},
         iterations: 5,
         compressors: [{id: 1, compressor: 'zstd', level: 9}],
       },

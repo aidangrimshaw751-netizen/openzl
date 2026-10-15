@@ -13,7 +13,7 @@ const ITERATIONS = 'Iterations must be an integer from 1 to 1000';
 const NO_COMPRESSORS = 'Choose at least one compressor';
 const CANDIDATES = `OpenZL candidate count must be between ${trainedCandidates.desktopMin} and ${trainedCandidates.max}`;
 const INVALID_ROW = 'Invalid compressor row';
-const NO_INPUT = 'Benchmark input must contain a file path or bytes';
+const NO_INPUT = 'Benchmark input must be a file path or the bundled sample';
 const INVALID_PATH = 'Invalid input path';
 const INVALID_PROFILE_ARG = 'OpenZL profile argument is invalid';
 
@@ -75,11 +75,13 @@ const inputSchema = z
         .min(1, INVALID_PATH)
         .refine((path) => !path.includes('\0'), INVALID_PATH)
         .optional(),
-      data: z.instanceof(Uint8Array, {error: NO_INPUT}).optional(),
+      // The main process swaps in where the sample is installed, so the page
+      // never has to know.
+      sample: z.literal(true, {error: NO_INPUT}).optional(),
     },
     {error: 'Benchmark input is missing'},
   )
-  .refine((input) => (input.path === undefined) !== (input.data === undefined), NO_INPUT);
+  .refine((input) => (input.path === undefined) !== (input.sample === undefined), NO_INPUT);
 
 /** Keys are in the order they are reported: the first invalid one names the error. */
 const benchmarkRequestSchema = z.object(

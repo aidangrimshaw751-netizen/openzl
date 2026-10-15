@@ -197,12 +197,13 @@ async function trainedCandidatePaths(zliPath, inputPath, compressor, outputDirec
 }
 
 /**
- * Calls `body(inputPath, workDirectory)` with the input as a file a native
- * binary can read, inside a scratch directory under `tempRoot` that is removed
- * afterwards. On Windows the binaries read paths in the ANSI code page, so a
- * path they could not open is refused before anything is created or spawned.
+ * Calls `body(inputPath, workDirectory)` with a scratch directory under
+ * `tempRoot` that is removed afterwards. The input is always a file already on
+ * disk, read where it is. On Windows the binaries read paths in the ANSI code
+ * page, so a temp folder they could not use is refused before anything is
+ * created or spawned, and an input they could not open is copied.
  */
-async function withInputFile(input, {tempRoot = os.tmpdir(), codePage} = {}, body) {
+async function inWorkDirectory(input, {tempRoot = os.tmpdir(), codePage} = {}, body) {
   const onWindows = codePage !== undefined || process.platform === 'win32';
   const ansiCodePage = codePage ?? (onWindows ? await windowsAnsiCodePage() : undefined);
   if (ansiCodePage !== undefined) {
@@ -215,21 +216,15 @@ async function withInputFile(input, {tempRoot = os.tmpdir(), codePage} = {}, bod
   }
   const workDirectory = await fs.mkdtemp(path.join(tempRoot, 'openzl-playground-'));
   try {
-    let inputPath;
-    if ('path' in input) {
-      // Absolute paths never start with '-', so they cannot be parsed as flags.
-      inputPath = path.resolve(input.path);
-      // zli would get a path the code page cannot represent mangled, so it
-      // reads a copy in the work directory, whose path passed the check above.
-      // When the code page could not be checked, any path past ASCII is copied.
-      if (onWindows && mayNotReachZliIntact(inputPath, ansiCodePage)) {
-        const copy = path.join(workDirectory, 'input.bin');
-        await fs.copyFile(inputPath, copy);
-        inputPath = copy;
-      }
-    } else {
-      inputPath = path.join(workDirectory, 'input.bin');
-      await fs.writeFile(inputPath, Buffer.from(input.data.buffer, input.data.byteOffset, input.data.byteLength));
+    // Absolute paths never start with '-', so they cannot be parsed as flags.
+    let inputPath = path.resolve(input.path);
+    // The binaries would get a path the code page cannot represent mangled, so
+    // they read a copy in the work directory, whose path passed the check above.
+    // When the code page could not be checked, any path past ASCII is copied.
+    if (onWindows && mayNotReachZliIntact(inputPath, ansiCodePage)) {
+      const copy = path.join(workDirectory, 'input.bin');
+      await fs.copyFile(inputPath, copy);
+      inputPath = copy;
     }
     return await body(inputPath, workDirectory);
   } finally {
@@ -252,7 +247,7 @@ function runOpenZLBenchmark(
   {signal, onChild, onStage, tempRoot, codePage} = {},
 ) {
   const context = {signal, onChild};
-  return withInputFile(input, {tempRoot, codePage}, async (inputPath, workDirectory) => {
+  return inWorkDirectory(input, {tempRoot, codePage}, async (inputPath, workDirectory) => {
     if (!compressor.trainRequested) {
       onStage?.({stage: 'benchmark'});
       return [
@@ -306,7 +301,7 @@ function runZstdBenchmark(
   iterations,
   {signal, onChild, onStage, tempRoot, codePage} = {},
 ) {
-  return withInputFile(input, {tempRoot, codePage}, async (inputPath, workDirectory) => {
+  return inWorkDirectory(input, {tempRoot, codePage}, async (inputPath, workDirectory) => {
     onStage?.({stage: 'benchmark'});
     const csvPath = path.join(workDirectory, 'zstd.csv');
     await runNative(zstdBenchmarkPath, [inputPath, ...benchmarkArguments(level, iterations, csvPath)], {

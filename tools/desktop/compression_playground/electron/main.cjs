@@ -12,6 +12,7 @@ const {app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session, shell,
 const {menuTemplate} = require('./app-menu.cjs');
 const {APP_ORIGIN, APP_SCHEME, originOf, resolveBundlePath} = require('./app-protocol.cjs');
 const {validateRequest} = require('./benchmark-request.cjs');
+const {SAMPLE_NAME, SAMPLE_SOURCE_PATH} = require('./sample.cjs');
 const {parseWorkerMessage} = require('./worker-messages.cjs');
 const {isAllowedExternalUrl} = require('./external-links.cjs');
 
@@ -33,6 +34,24 @@ function nativeBinaryPath(name) {
   return app.isPackaged
     ? path.join(process.resourcesPath, 'native', executable)
     : path.join(__dirname, 'native', 'build', 'Release', executable);
+}
+
+function samplePath() {
+  return app.isPackaged ? path.join(process.resourcesPath, SAMPLE_NAME) : SAMPLE_SOURCE_PATH;
+}
+
+/** The request the worker runs: the bundled sample, if asked for, as the path it is installed at. */
+function resolveInput(request) {
+  if (!('sample' in request.input)) {
+    return request;
+  }
+  const sample = samplePath();
+  if (!fs.existsSync(sample)) {
+    throw new Error(
+      app.isPackaged ? 'The bundled sample is missing from this installation' : `The sample is missing: ${sample}`,
+    );
+  }
+  return {...request, input: {path: sample}};
 }
 
 function nativeHostPath() {
@@ -226,7 +245,7 @@ function registerIpc() {
       if (activeRuns.size > 0) {
         throw new Error('A benchmark is already running');
       }
-      request = validateRequest(rawRequest);
+      request = resolveInput(validateRequest(rawRequest));
     } catch (error) {
       port.postMessage({type: 'error', message: error.message});
       port.close();

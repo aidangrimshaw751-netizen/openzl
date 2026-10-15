@@ -41,13 +41,6 @@ async function benchmarkGzip(input, level, iterations, signal) {
   return {iterations, srcSize: input.length, compressedSize: compressed.length, compressMs, decompressMs};
 }
 
-function readInput(input) {
-  if ('path' in input) {
-    return fs.readFileSync(input.path);
-  }
-  return Buffer.from(input.data.buffer, input.data.byteOffset, input.data.byteLength);
-}
-
 function withThroughput(result) {
   const bytesMeasured = result.srcSize * result.iterations;
   return {
@@ -104,7 +97,7 @@ async function run({zliPath, zstdBenchmarkPath, request, tempRoot}, {signal, onC
       rowResults.push({...withThroughput(result), rowId: compressor.id, candidate: 0, label});
     } else {
       onStage({stage: 'benchmark'});
-      input ??= readInput(request.input);
+      input ??= fs.readFileSync(request.input.path);
       const result = await benchmarkGzip(input, compressor.level, request.iterations, signal);
       rowResults.push({...withThroughput(result), rowId: compressor.id, candidate: 0, label});
     }

@@ -11,6 +11,7 @@ import {
   FAKE_ZSTD_BENCHMARK,
   fakeZli,
   HANGING_ZLI,
+  inputFile,
   MALFORMED_ZLI,
   removeFakeZlis,
   UNORDERED_CANDIDATES_ZLI,
@@ -79,7 +80,7 @@ fs.writeFileSync(
     process.env.FAKE_ZLI_EOL = '\r\n';
     process.env.FAKE_ZLI_PATH_COLUMN = '0';
     try {
-      const results = await runOpenZLBenchmark(fakeZli(), {data: new Uint8Array([1, 2, 3])}, UNTRAINED, 4);
+      const results = await runOpenZLBenchmark(fakeZli(), {path: inputFile(new Uint8Array([1, 2, 3]))}, UNTRAINED, 4);
 
       expect(results).toEqual([{iterations: 4, srcSize: 3, compressedSize: 2, compressMs: 1, decompressMs: 1}]);
     } finally {
@@ -91,7 +92,7 @@ fs.writeFileSync(
   it('benchmarks every trained candidate in index order', async () => {
     const results = await runOpenZLBenchmark(
       fakeZli(UNORDERED_CANDIDATES_ZLI),
-      {data: new Uint8Array([1, 2, 3])},
+      {path: inputFile(new Uint8Array([1, 2, 3]))},
       {...UNTRAINED, trainRequested: true},
       4,
     );
@@ -109,13 +110,19 @@ fs.writeFileSync(
 
   it('reports each stage as it starts', async () => {
     const trained: ZliStage[] = [];
-    await runOpenZLBenchmark(fakeZli(), {data: new Uint8Array([1])}, {...UNTRAINED, trainRequested: true}, 1, {
-      onStage: (stage) => trained.push(stage),
-    });
+    await runOpenZLBenchmark(
+      fakeZli(),
+      {path: inputFile(new Uint8Array([1]))},
+      {...UNTRAINED, trainRequested: true},
+      1,
+      {
+        onStage: (stage) => trained.push(stage),
+      },
+    );
     expect(trained).toEqual([{stage: 'train'}, {stage: 'candidates', candidate: 1, candidateCount: 1}]);
 
     const untrained: ZliStage[] = [];
-    await runOpenZLBenchmark(fakeZli(), {data: new Uint8Array([1])}, UNTRAINED, 1, {
+    await runOpenZLBenchmark(fakeZli(), {path: inputFile(new Uint8Array([1]))}, UNTRAINED, 1, {
       onStage: (stage) => untrained.push(stage),
     });
     expect(untrained).toEqual([{stage: 'benchmark'}]);
@@ -127,7 +134,7 @@ fs.writeFileSync(
     const before = runDirectories();
     const controller = new AbortController();
     const events: ZliChildEvent[] = [];
-    const run = runOpenZLBenchmark(zliPath, {data: new Uint8Array([1, 2, 3])}, UNTRAINED, 1, {
+    const run = runOpenZLBenchmark(zliPath, {path: inputFile(new Uint8Array([1, 2, 3]))}, UNTRAINED, 1, {
       signal: controller.signal,
       onChild: (event) => events.push(event),
     });
@@ -151,9 +158,9 @@ fs.writeFileSync(
   }, 10_000);
 
   it('rejects a zli benchmark CSV that breaks its format, naming the field', async () => {
-    await expect(runOpenZLBenchmark(fakeZli(MALFORMED_ZLI), {data: new Uint8Array([1])}, UNTRAINED, 1)).rejects.toThrow(
-      'zli returned an unexpected result (srcSize:',
-    );
+    await expect(
+      runOpenZLBenchmark(fakeZli(MALFORMED_ZLI), {path: inputFile(new Uint8Array([1]))}, UNTRAINED, 1),
+    ).rejects.toThrow('zli returned an unexpected result (srcSize:');
   });
 
   it('does not start zli once the run is aborted', async () => {
@@ -162,7 +169,7 @@ fs.writeFileSync(
     const onChild = vi.fn();
 
     await expect(
-      runOpenZLBenchmark(fakeZli(HANGING_ZLI), {data: new Uint8Array([1])}, UNTRAINED, 1, {
+      runOpenZLBenchmark(fakeZli(HANGING_ZLI), {path: inputFile(new Uint8Array([1]))}, UNTRAINED, 1, {
         signal: controller.signal,
         onChild,
       }),
@@ -174,13 +181,13 @@ fs.writeFileSync(
 describe('runZstdBenchmark', () => {
   const runDirectories = () => readdirSync(tmpdir()).filter((entry) => entry.startsWith('openzl-playground-'));
 
-  it('benchmarks bytes from a scratch file at the requested level, and cleans up', async () => {
+  it('benchmarks the input file at the requested level, and cleans up', async () => {
     const before = runDirectories();
     const stages: ZliStage[] = [];
 
     const result = await runZstdBenchmark(
       fakeZli(FAKE_ZSTD_BENCHMARK, 'zstd-benchmark'),
-      {data: new Uint8Array(5)},
+      {path: inputFile(new Uint8Array(5))},
       7,
       4,
       {onStage: (stage) => stages.push(stage)},
@@ -194,14 +201,14 @@ describe('runZstdBenchmark', () => {
   it('reports what zstd-benchmark wrote to stderr when it fails', async () => {
     const failing = fakeZli("process.stderr.write('Cannot open input file: x\\n'); process.exit(1);", 'zstd-benchmark');
 
-    await expect(runZstdBenchmark(failing, {data: new Uint8Array(1)}, 3, 1)).rejects.toThrow(
+    await expect(runZstdBenchmark(failing, {path: inputFile(new Uint8Array(1))}, 3, 1)).rejects.toThrow(
       'Cannot open input file: x',
     );
   });
 
   it('names zstd-benchmark when its CSV breaks the format', async () => {
     await expect(
-      runZstdBenchmark(fakeZli(MALFORMED_ZLI, 'zstd-benchmark'), {data: new Uint8Array(1)}, 3, 1),
+      runZstdBenchmark(fakeZli(MALFORMED_ZLI, 'zstd-benchmark'), {path: inputFile(new Uint8Array(1))}, 3, 1),
     ).rejects.toThrow('zstd-benchmark returned an unexpected result (srcSize:');
   });
 

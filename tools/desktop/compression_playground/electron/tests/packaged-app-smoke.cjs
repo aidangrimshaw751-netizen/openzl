@@ -13,6 +13,7 @@ const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
+const {SAMPLE_SIZE} = require('../sample.cjs');
 
 const RELEASE = path.resolve(__dirname, '..', '..', 'release');
 const PRODUCT = 'OpenZL Compression Playground';
@@ -195,10 +196,17 @@ async function main() {
               {id: 2, compressor: 'zstd', level: 3},
             ],
           }, (event) => events.push(event.type === 'progress' ? event.progress.label + ': ' + event.progress.stage : 'partial: ' + event.results.map((r) => r.label).join())).results;
+          // The installer's own copy, found by the main process from the name alone.
+          const sampleResults = await window.openzlDesktop.startBenchmark({
+            input: {sample: true},
+            iterations: 1,
+            compressors: [{id: 3, compressor: 'gzip', level: 1}],
+          }).results;
           return {
             origin: location.origin,
             labels: results.map((r) => r.label),
             srcSizes: results.map((r) => r.srcSize),
+            sampleSrcSizes: sampleResults.map((r) => r.srcSize),
             events,
           };
         })()`,
@@ -208,6 +216,7 @@ async function main() {
         origin: 'app://bundle',
         labels: ['OpenZL serial', 'zstd 3'],
         srcSizes: [size, size],
+        sampleSrcSizes: [SAMPLE_SIZE],
         events: ['OpenZL serial: benchmark', 'partial: OpenZL serial', 'zstd 3: benchmark', 'partial: zstd 3'],
       });
       assert.ok(!app.output.stderr.includes('Debugger listening'), '--inspect opened a debugger');

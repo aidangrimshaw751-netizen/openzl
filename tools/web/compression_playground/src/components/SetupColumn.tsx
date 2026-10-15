@@ -4,11 +4,11 @@ import {VStack} from '@chakra-ui/react';
 import ConfigureRunCard from './ConfigureRunCard.tsx';
 import RunBenchmarkCard from './RunBenchmarkCard.tsx';
 import UploadCard from './UploadCard.tsx';
-import type {RunConfig, RunState} from '../benchmarkTypes.ts';
+import type {RunConfig, RunInput, RunState} from '../benchmarkTypes.ts';
 import type {CompressorRows} from '../useCompressorRows.ts';
 
 interface SetupColumnProps {
-  file: File | null;
+  file: RunInput | null;
   onFileChange: (file: File | null) => void;
   compressors: CompressorRows;
   iterations: number;

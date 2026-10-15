@@ -101,6 +101,15 @@ export function removeFakeZlis(): void {
   }
 }
 
+/** Writes `bytes` to a file for a run to read, and returns its path. Removed with the fakes. */
+export function inputFile(bytes: Uint8Array): string {
+  const directory = mkdtempSync(join(tmpdir(), 'zli-client-input-'));
+  fakeZliDirectories.push(directory);
+  const path = join(directory, 'input.bin');
+  writeFileSync(path, bytes);
+  return path;
+}
+
 /** Writes `script` as an executable stand-in called `name` and returns its path. */
 export function fakeZli(script = FAKE_ZLI, name = 'zli'): string {
   const workDirectory = mkdtempSync(join(tmpdir(), 'zli-client-test-'));

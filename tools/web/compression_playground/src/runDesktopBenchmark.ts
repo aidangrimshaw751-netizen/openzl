@@ -69,8 +69,8 @@ export function runDesktopBenchmark(
   }
   inFlight = true;
 
-  // Before the input is read, which can mean reading a whole file: the button
-  // has to disable now, not when the backend gets round to starting.
+  // Before anything else: the button has to disable now, not when the backend
+  // gets round to starting.
   onState({status: 'loading'});
 
   const results: JobResult[] = [];

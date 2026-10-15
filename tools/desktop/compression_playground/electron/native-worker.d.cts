@@ -16,11 +16,15 @@ export type BenchmarkRow =
     }
   | {id: number; compressor: 'zstd' | 'gzip'; level: number};
 
+/** What the page sends. `sample` asks for the file the app bundles. */
 export interface BenchmarkRequest {
-  input: {path: string} | {data: Uint8Array};
+  input: {path: string} | {sample: true};
   compressors: readonly BenchmarkRow[];
   iterations: number;
 }
+
+/** What the worker runs: the main process has resolved the sample to its path. */
+export type ResolvedBenchmarkRequest = Omit<BenchmarkRequest, 'input'> & {input: {path: string}};
 
 export interface BenchmarkResult {
   rowId: number;
@@ -45,6 +49,6 @@ export type BenchmarkEvent =
   | {type: 'partial'; results: BenchmarkResult[]};
 
 export function run(
-  payload: {zliPath: string; zstdBenchmarkPath: string; request: BenchmarkRequest; tempRoot?: string},
+  payload: {zliPath: string; zstdBenchmarkPath: string; request: ResolvedBenchmarkRequest; tempRoot?: string},
   options?: {signal?: AbortSignal; onChild?: (event: ZliChildEvent) => void; onEvent?: (event: BenchmarkEvent) => void},
 ): Promise<BenchmarkResult[]>;

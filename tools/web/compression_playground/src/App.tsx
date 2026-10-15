@@ -6,13 +6,19 @@ import {ToolHeader} from '@openzl/web-common';
 import ResultsPanel from './components/ResultsPanel.tsx';
 import SetupColumn from './components/SetupColumn.tsx';
 import UnsupportedBrowser from './components/UnsupportedBrowser.tsx';
-import {toCompressorConfig, type CompressorConfig, type RunConfig, type RunState} from './benchmarkTypes.ts';
+import {
+  toCompressorConfig,
+  type CompressorConfig,
+  type RunConfig,
+  type RunInput,
+  type RunState,
+} from './benchmarkTypes.ts';
 import {ITERATIONS_DEFAULT} from './compressors.ts';
 import {desktopBridge, type OpenZLDesktopBridge} from './desktop.ts';
 import {detectEngineSupport, engineBlocker, isolationSettled} from './engineSupport.ts';
 import {runBenchmark} from './runBenchmark.ts';
 import {runDesktopBenchmark} from './runDesktopBenchmark.ts';
-import {makeSample} from './sample.ts';
+import {BUNDLED_SAMPLE} from './sample.ts';
 import {useCompressorRows} from './useCompressorRows.ts';
 import logoUrl from '/OpenZL_logo.png?url';
 
@@ -78,7 +84,7 @@ function configBlockersFor(compressors: readonly CompressorConfig[]): string[] {
 }
 
 /** Why Run is unavailable, if it is, in the order to fix it. */
-function runBlockersFor(file: File | null, compressors: readonly CompressorConfig[]): string[] {
+function runBlockersFor(file: RunInput | null, compressors: readonly CompressorConfig[]): string[] {
   return [
     ...(file === null ? ['Choose a file in step 1 to run the benchmark.'] : []),
     ...configBlockersFor(compressors),
@@ -145,7 +151,7 @@ export default function App() {
 
 /** Owns the run setup, so none of it exists on the blocked path, where nothing could use it. */
 function Playground({bridge}: {bridge: OpenZLDesktopBridge | undefined}) {
-  const [file, setFile] = useState<File | null>(null);
+  const [file, setFile] = useState<RunInput | null>(null);
   const desktop = bridge !== undefined;
   const compressors = useCompressorRows({desktop});
   const [iterations, setIterations] = useState(ITERATIONS_DEFAULT);
@@ -177,9 +183,8 @@ function Playground({bridge}: {bridge: OpenZLDesktopBridge | undefined}) {
     bridge === undefined || configBlockers.length > 0
       ? null
       : () => {
-          const sample = makeSample();
-          setFile(sample);
-          onRun({input: sample, compressors: compressorConfigs, iterations});
+          setFile(BUNDLED_SAMPLE);
+          onRun({input: BUNDLED_SAMPLE, compressors: compressorConfigs, iterations});
         };
   useBlockStrayFileDrops();
 

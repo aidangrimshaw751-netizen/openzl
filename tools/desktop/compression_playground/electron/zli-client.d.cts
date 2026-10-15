@@ -38,7 +38,7 @@ export interface RunOptions {
 
 export function runOpenZLBenchmark(
   zliPath: string,
-  input: {path: string} | {data: Uint8Array},
+  input: {path: string},
   compressor: OpenZLCompressor,
   iterations: number,
   options?: RunOptions,
@@ -46,7 +46,7 @@ export function runOpenZLBenchmark(
 
 export function runZstdBenchmark(
   zstdBenchmarkPath: string,
-  input: {path: string} | {data: Uint8Array},
+  input: {path: string},
   level: number,
   iterations: number,
   options?: RunOptions,
