@@ -4,6 +4,8 @@
 
 'use strict';
 
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const {app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session, shell, utilityProcess} = require('electron');
@@ -12,9 +14,11 @@ const {validateRequest} = require('./benchmark-request.cjs');
 const {isAllowedExternalUrl} = require('./external-links.cjs');
 
 const BENCHMARK_CHANNEL = 'openzl:benchmark';
+const CANCEL_GRACE_MS = 5000;
 
 let mainWindow;
 let rendererOrigin;
+const activeRuns = new Set();
 
 // Must run before the app is ready. A standard, secure scheme gives the bundle a
 // real origin, so CSP 'self', fetch, and module scripts behave as on the web.
@@ -59,42 +63,126 @@ function serveRenderer() {
   });
 }
 
-function runBenchmark(request) {
-  return new Promise((resolve, reject) => {
-    const worker = utilityProcess.fork(nativeHostPath(), [], {
-      serviceName: 'OpenZL benchmark',
-      stdio: 'inherit',
-    });
-    let settled = false;
-    worker.once('message', (message) => {
-      settled = true;
-      worker.kill();
-      if (message.ok) {
-        resolve(message.results);
-      } else {
-        reject(new Error(message.error));
-      }
-    });
-    worker.once('error', (type, location) => {
-      settled = true;
-      worker.kill();
-      reject(new Error(`Native benchmark process failed (${type} at ${location})`));
-    });
-    worker.once('exit', (code) => {
-      if (!settled) {
-        reject(new Error(`Native benchmark process exited unexpectedly (code ${code})`));
-      }
-    });
-    worker.once('spawn', () => {
-      try {
-        worker.postMessage({zliPath: zliPath(), request});
-      } catch (error) {
-        settled = true;
-        worker.kill();
-        reject(error);
-      }
-    });
+/**
+ * One benchmark run in its own utility process, reporting to the renderer over
+ * `port`. The main process records every zli PID the worker reports, so it can
+ * kill them if the worker dies or ignores a cancel: children do not exit with
+ * their parent on their own. It also owns the run's scratch directory, which a
+ * killed worker could not clean up.
+ */
+function startRun(request, port) {
+  // Before the fork: a worker started first would be leaked if this threw, since
+  // nothing has recorded it yet for `will-quit` to clean up.
+  let tempRoot;
+  try {
+    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'openzl-run-'));
+  } catch (error) {
+    port.postMessage({type: 'error', message: `Could not create a scratch directory: ${error.message}`});
+    port.close();
+    return;
+  }
+  const worker = utilityProcess.fork(nativeHostPath(), [], {
+    serviceName: 'OpenZL benchmark',
+    stdio: 'inherit',
   });
+  const run = {childPids: new Set(), tempRoot, worker, port, finished: false, watchdog: undefined};
+  run.cancel = () => {
+    if (!run.finished && run.watchdog === undefined) {
+      worker.postMessage({type: 'cancel'});
+      run.watchdog = setTimeout(() => disposeRun(run, {type: 'cancelled'}), CANCEL_GRACE_MS);
+    }
+  };
+
+  worker.on('message', (message) => {
+    if (message.type === 'child') {
+      if (message.state === 'exited') {
+        run.childPids.delete(message.pid);
+      } else if (run.finished) {
+        // Reported after the run's children were killed, so nothing else will.
+        killPid(message.pid);
+      } else {
+        run.childPids.add(message.pid);
+      }
+    } else if (['results', 'error', 'cancelled'].includes(message.type)) {
+      disposeRun(run, message);
+    }
+  });
+  worker.once('error', (type, location) =>
+    disposeRun(run, {type: 'error', message: `Native benchmark process failed (${type} at ${location})`}),
+  );
+  // A worker that exits while cancelling may not have reported it first.
+  worker.once('exit', (code) =>
+    disposeRun(
+      run,
+      run.watchdog === undefined
+        ? {type: 'error', message: `Native benchmark process exited unexpectedly (code ${code})`}
+        : {type: 'cancelled'},
+    ),
+  );
+  worker.once('spawn', () => {
+    try {
+      worker.postMessage({type: 'start', zliPath: zliPath(), request, tempRoot: run.tempRoot});
+    } catch (error) {
+      // The worker died between spawning and receiving its start message.
+      disposeRun(run, {type: 'error', message: `Could not start the benchmark process: ${error.message}`});
+    }
+  });
+
+  port.on('message', ({data}) => {
+    if (data?.type === 'cancel') {
+      run.cancel();
+    }
+  });
+  // The renderer closed its end: it reloaded, crashed, or its window closed.
+  port.on('close', () => run.cancel());
+  port.start();
+  activeRuns.add(run);
+}
+
+/**
+ * Ends `run` and sends the renderer `message`, once: later calls do nothing.
+ * Kills the run's zli processes and its worker, and removes its scratch
+ * directory.
+ */
+function disposeRun(run, message) {
+  if (run.finished) {
+    return;
+  }
+  run.finished = true;
+  clearTimeout(run.watchdog);
+  activeRuns.delete(run);
+  killChildren(run);
+  // Before the directory goes: a worker still running could be writing into it.
+  run.worker.kill();
+  removeTempRoot(run);
+  run.port.postMessage(message);
+  run.port.close();
+}
+
+function killPid(pid) {
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    // Already exited.
+  }
+}
+
+function killChildren(run) {
+  for (const pid of run.childPids) {
+    killPid(pid);
+  }
+  run.childPids.clear();
+}
+
+function removeTempRoot(run) {
+  try {
+    // The processes just killed may not have released their files yet, which
+    // blocks removal on Windows; the retries wait them out.
+    fs.rmSync(run.tempRoot, {recursive: true, force: true, maxRetries: 3});
+  } catch (error) {
+    // Cleanup must not stop the run from reporting its outcome.
+    console.warn(`Could not remove ${run.tempRoot}: ${error.message}`);
+  }
 }
 
 // The UI needs no browser permissions, and Electron grants requests by default.
@@ -105,11 +193,23 @@ function denyPermissions() {
 }
 
 function registerIpc() {
-  ipcMain.handle(BENCHMARK_CHANNEL, (event, rawRequest) => {
-    if (!isTrustedSender(event)) {
-      throw new Error('Untrusted benchmark request');
+  ipcMain.on(BENCHMARK_CHANNEL, (event, rawRequest) => {
+    const [port] = event.ports;
+    if (port === undefined) {
+      return;
     }
-    return runBenchmark(validateRequest(rawRequest));
+    let request;
+    try {
+      if (!isTrustedSender(event)) {
+        throw new Error('Untrusted benchmark request');
+      }
+      request = validateRequest(rawRequest);
+    } catch (error) {
+      port.postMessage({type: 'error', message: `${error.name}: ${error.message}`});
+      port.close();
+      return;
+    }
+    startRun(request, port);
   });
 }
 
@@ -177,6 +277,12 @@ started.catch((error) => {
     error instanceof Error ? error.message : String(error),
   );
   app.exit(1);
+});
+
+app.on('will-quit', () => {
+  for (const run of activeRuns) {
+    disposeRun(run, {type: 'cancelled'});
+  }
 });
 
 app.on('window-all-closed', () => {

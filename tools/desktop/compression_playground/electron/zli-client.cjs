@@ -13,9 +13,22 @@ const TRAINING_THREADS = Math.min(4, Math.max(1, os.availableParallelism()));
 // The leading columns of zli benchmark --output-csv. The path column after them
 // is not read, so a quoted path cannot shift the numbers.
 const CSV_COLUMNS = ['srcSize', 'compressedSize', 'compressionRatio', 'ctimeMs', 'dtimeMs', 'iters'];
+const KILL_GRACE_MS = 2000;
 
-function runZli(zliPath, args) {
+// SIGTERM first, then SIGKILL if zli has not exited. Windows terminates on either.
+function terminate(child) {
+  child.kill('SIGTERM');
+  const escalate = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS);
+  // 'exit' rather than 'close', which waits for stdio and need not follow.
+  child.once('exit', () => clearTimeout(escalate));
+}
+
+function runZli(zliPath, args, {signal, onChild}) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
     // --verbose 1 limits stderr to errors, so a failure message can be shown as-is.
     const child = spawn(zliPath, [...args, '--verbose', '1'], {
       stdio: ['ignore', 'ignore', 'pipe'],
@@ -23,6 +36,8 @@ function runZli(zliPath, args) {
     });
     child.stderr.setEncoding('utf8');
     let stderr = '';
+    // Why zli was stopped; reported once it has actually exited.
+    let stopReason;
     let settled = false;
     const fail = (error) => {
       if (!settled) {
@@ -30,15 +45,39 @@ function runZli(zliPath, args) {
         reject(error);
       }
     };
+    const stop = (reason) => {
+      if (stopReason === undefined) {
+        stopReason = reason;
+        terminate(child);
+      }
+    };
+    const onAbort = () => stop(signal.reason);
+    signal?.addEventListener('abort', onAbort, {once: true});
+    const cleanup = () => {
+      signal?.removeEventListener('abort', onAbort);
+    };
+    if (child.pid !== undefined) {
+      onChild?.({pid: child.pid, state: 'spawned'});
+    }
+
     child.stderr.on('data', (chunk) => {
       process.stderr.write(chunk);
       stderr += chunk;
     });
     child.once('error', (error) => {
+      cleanup();
       fail(error);
     });
-    child.once('close', (code, signal) => {
+    child.once('close', (code, exitSignal) => {
+      cleanup();
+      if (child.pid !== undefined) {
+        onChild?.({pid: child.pid, state: 'exited'});
+      }
       if (settled) {
+        return;
+      }
+      if (stopReason !== undefined) {
+        fail(stopReason);
         return;
       }
       if (code !== 0) {
@@ -47,7 +86,7 @@ function runZli(zliPath, args) {
           new Error(
             detail !== ''
               ? detail
-              : `zli exited unexpectedly (${signal === null ? `code ${code}` : `signal ${signal}`})`,
+              : `zli exited unexpectedly (${exitSignal === null ? `code ${code}` : `signal ${exitSignal}`})`,
           ),
         );
         return;
@@ -89,35 +128,43 @@ async function readBenchmarkCsv(csvPath) {
   };
 }
 
-async function benchmark(zliPath, inputPath, compressorArgs, level, iterations, csvPath) {
-  await runZli(zliPath, [
-    'benchmark',
-    inputPath,
-    ...compressorArgs,
-    '--level',
-    String(level),
-    '--num-iters',
-    String(iterations),
-    '--output-csv',
-    csvPath,
-  ]);
+async function benchmark(zliPath, inputPath, compressorArgs, level, iterations, csvPath, context) {
+  await runZli(
+    zliPath,
+    [
+      'benchmark',
+      inputPath,
+      ...compressorArgs,
+      '--level',
+      String(level),
+      '--num-iters',
+      String(iterations),
+      '--output-csv',
+      csvPath,
+    ],
+    context,
+  );
   return readBenchmarkCsv(csvPath);
 }
 
-async function trainedCandidatePaths(zliPath, inputPath, compressor, outputDirectory) {
-  await runZli(zliPath, [
-    'train',
-    inputPath,
-    ...profileArguments(compressor),
-    '--output',
-    outputDirectory,
-    '--pareto-frontier',
-    '--max-num-candidates',
-    String(compressor.candidates),
-    '--threads',
-    String(TRAINING_THREADS),
-    '--use-all-samples',
-  ]);
+async function trainedCandidatePaths(zliPath, inputPath, compressor, outputDirectory, context) {
+  await runZli(
+    zliPath,
+    [
+      'train',
+      inputPath,
+      ...profileArguments(compressor),
+      '--output',
+      outputDirectory,
+      '--pareto-frontier',
+      '--max-num-candidates',
+      String(compressor.candidates),
+      '--threads',
+      String(TRAINING_THREADS),
+      '--use-all-samples',
+    ],
+    context,
+  );
   // zli train --pareto-frontier writes candidate i to <output>/<i>.zc.
   const indices = (await fs.readdir(outputDirectory))
     .flatMap((name) => /^(\d+)\.zc$/.exec(name)?.[1] ?? [])
@@ -132,9 +179,18 @@ async function trainedCandidatePaths(zliPath, inputPath, compressor, outputDirec
 /**
  * zli train benchmarks candidates at a fixed iteration count and has no
  * --level, so each candidate is re-benchmarked with the requested settings.
+ * Aborting `signal` stops the running zli and rejects with `signal.reason`.
+ * Scratch files go under `tempRoot`, which defaults to the OS temp directory.
  */
-async function runOpenZLBenchmark(zliPath, input, compressor, iterations) {
-  const workDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'openzl-playground-'));
+async function runOpenZLBenchmark(
+  zliPath,
+  input,
+  compressor,
+  iterations,
+  {signal, onChild, tempRoot = os.tmpdir()} = {},
+) {
+  const context = {signal, onChild};
+  const workDirectory = await fs.mkdtemp(path.join(tempRoot, 'openzl-playground-'));
   try {
     let inputPath;
     if ('path' in input) {
@@ -154,6 +210,7 @@ async function runOpenZLBenchmark(zliPath, input, compressor, iterations) {
           compressor.level,
           iterations,
           path.join(workDirectory, 'benchmark.csv'),
+          context,
         ),
       ];
     }
@@ -162,6 +219,7 @@ async function runOpenZLBenchmark(zliPath, input, compressor, iterations) {
       inputPath,
       compressor,
       path.join(workDirectory, 'candidates'),
+      context,
     );
     const results = [];
     for (const [index, candidatePath] of candidatePaths.entries()) {
@@ -173,6 +231,7 @@ async function runOpenZLBenchmark(zliPath, input, compressor, iterations) {
           compressor.level,
           iterations,
           path.join(workDirectory, `candidate-${index}.csv`),
+          context,
         ),
       );
     }
