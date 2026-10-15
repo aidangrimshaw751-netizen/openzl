@@ -9,20 +9,32 @@ const {performance} = require('node:perf_hooks');
 const zlib = require('node:zlib');
 const {runOpenZLBenchmark} = require('./zli-client.cjs');
 
-function nativeCodecBenchmark(input, iterations, compress, decompress) {
-  let compressed = compress(input);
-  const compressStart = performance.now();
+// The codecs are synchronous, so the worker yields between timed iterations to
+// receive a cancel message. Only the codec calls themselves are timed.
+async function timedIterations(iterations, signal, operation) {
+  let elapsedMs = 0;
+  let output;
   for (let index = 0; index < iterations; index += 1) {
-    compressed = compress(input);
+    await new Promise((resolve) => setImmediate(resolve));
+    signal?.throwIfAborted();
+    const start = performance.now();
+    output = operation();
+    elapsedMs += performance.now() - start;
   }
-  const compressMs = performance.now() - compressStart;
+  return {elapsedMs, output};
+}
 
-  let decompressed = decompress(compressed);
-  const decompressStart = performance.now();
-  for (let index = 0; index < iterations; index += 1) {
-    decompressed = decompress(compressed);
-  }
-  const decompressMs = performance.now() - decompressStart;
+async function nativeCodecBenchmark(input, iterations, compress, decompress, signal) {
+  // The untimed warm-up calls cannot be interrupted either, so check first.
+  signal?.throwIfAborted();
+  compress(input);
+  const {elapsedMs: compressMs, output: compressed} = await timedIterations(iterations, signal, () => compress(input));
+
+  signal?.throwIfAborted();
+  decompress(compressed);
+  const {elapsedMs: decompressMs, output: decompressed} = await timedIterations(iterations, signal, () =>
+    decompress(compressed),
+  );
   if (!Buffer.from(decompressed).equals(input)) {
     throw new Error('Native codec did not reproduce the input');
   }
@@ -39,7 +51,7 @@ function nativeCodecBenchmark(input, iterations, compress, decompress) {
   };
 }
 
-function benchmarkZstd(input, level, iterations) {
+function benchmarkZstd(input, level, iterations, signal) {
   if (typeof zlib.zstdCompressSync !== 'function' || typeof zlib.zstdDecompressSync !== 'function') {
     throw new Error('This Electron runtime does not include native zstd support');
   }
@@ -49,15 +61,17 @@ function benchmarkZstd(input, level, iterations) {
     iterations,
     (value) => zlib.zstdCompressSync(value, {params}),
     (value) => zlib.zstdDecompressSync(value),
+    signal,
   );
 }
 
-function benchmarkGzip(input, level, iterations) {
+function benchmarkGzip(input, level, iterations, signal) {
   return nativeCodecBenchmark(
     input,
     iterations,
     (value) => zlib.gzipSync(value, {level}),
     (value) => zlib.gunzipSync(value),
+    signal,
   );
 }
 
@@ -78,13 +92,18 @@ function finishOpenZLResult(result) {
   };
 }
 
-async function run({zliPath, request}) {
+async function run({zliPath, request, tempRoot}, {signal, onChild} = {}) {
   const results = [];
   let input;
 
   for (const compressor of request.compressors) {
+    signal?.throwIfAborted();
     if (compressor.compressor === 'OpenZL') {
-      const nativeResults = await runOpenZLBenchmark(zliPath, request.input, compressor, request.iterations);
+      const nativeResults = await runOpenZLBenchmark(zliPath, request.input, compressor, request.iterations, {
+        signal,
+        onChild,
+        tempRoot,
+      });
       for (let index = 0; index < nativeResults.length; index += 1) {
         const suffix = nativeResults.length > 1 ? ` candidate ${index + 1}` : '';
         results.push({
@@ -98,8 +117,8 @@ async function run({zliPath, request}) {
       input ??= readInput(request.input);
       const result =
         compressor.compressor === 'zstd'
-          ? benchmarkZstd(input, compressor.level, request.iterations)
-          : benchmarkGzip(input, compressor.level, request.iterations);
+          ? await benchmarkZstd(input, compressor.level, request.iterations, signal)
+          : await benchmarkGzip(input, compressor.level, request.iterations, signal);
       results.push({
         ...result,
         rowId: compressor.id,
@@ -111,18 +130,37 @@ async function run({zliPath, request}) {
   return results;
 }
 
-async function execute(payload, postMessage) {
-  try {
-    postMessage({ok: true, results: await run(payload)});
-  } catch (error) {
-    postMessage({ok: false, error: error instanceof Error ? error.message : String(error)});
-  }
+/**
+ * Worker protocol. From the main process: {type: 'start', zliPath, request, tempRoot},
+ * then optionally {type: 'cancel'}. To it: {type: 'child', pid, state} for
+ * every zli process, then exactly one of {type: 'results', results},
+ * {type: 'error', message}, or {type: 'cancelled'}.
+ */
+function serve(parentPort) {
+  const controller = new AbortController();
+  const postMessage = (message) => parentPort.postMessage(message);
+  parentPort.on('message', ({data}) => {
+    if (data?.type === 'cancel') {
+      controller.abort(new Error('Benchmark cancelled'));
+    } else if (data?.type === 'start') {
+      const {signal} = controller;
+      run(data, {signal, onChild: (event) => postMessage({type: 'child', ...event})}).then(
+        (results) => postMessage({type: 'results', results}),
+        (error) =>
+          postMessage(
+            // Only a rejection the abort caused: a run can fail on its own
+            // just as a cancel arrives, and its error should still be seen.
+            signal.aborted && error === signal.reason
+              ? {type: 'cancelled'}
+              : {type: 'error', message: error instanceof Error ? error.message : String(error)},
+          ),
+      );
+    }
+  });
 }
 
 if (process.parentPort !== undefined) {
-  process.parentPort.once('message', (event) => {
-    void execute(event.data, (message) => process.parentPort.postMessage(message));
-  });
+  serve(process.parentPort);
 }
 
 module.exports = {run};
