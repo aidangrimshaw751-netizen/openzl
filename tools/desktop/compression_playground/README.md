@@ -15,6 +15,7 @@ yarn test:native
 yarn test:security   # needs a display (Xvfb on Linux)
 yarn test:packaged   # packs the app first; needs a display
 yarn test:cancel     # needs a display and ps (Linux or macOS)
+yarn test:ui         # runs the sample through the page; needs a display
 yarn build
 ```
 
