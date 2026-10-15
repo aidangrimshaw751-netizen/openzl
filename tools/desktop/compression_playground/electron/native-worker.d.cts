@@ -10,7 +10,8 @@ export type BenchmarkRow =
       level: number;
       profile: string;
       trainRequested: boolean;
-      candidates: number;
+      /** Read only when `trainRequested`. */
+      candidates?: number;
       profileArg: string;
     }
   | {id: number; compressor: 'zstd' | 'gzip'; level: number};

@@ -32,9 +32,18 @@ function rejects(value: unknown, errorType: typeof TypeError | typeof RangeError
 }
 
 describe('validateRequest', () => {
-  it('returns a valid request unchanged', () => {
+  it('returns a validated copy of a valid request', () => {
     const valid = request();
-    expect(validateRequest(valid)).toBe(valid);
+    expect(validateRequest(valid)).toEqual(valid);
+  });
+
+  it('strips keys the worker does not use', () => {
+    const withExtras = {
+      ...request({compressors: [{...openZLRow(), optionsOpen: true}]}),
+      input: {path: '/tmp/sample.bin', note: 'renderer-only'},
+      debug: true,
+    };
+    expect(validateRequest(withExtras)).toEqual(request({compressors: [openZLRow()]}));
   });
 
   it('accepts every boundary value', () => {
@@ -48,7 +57,7 @@ describe('validateRequest', () => {
       request({input: {data: new Uint8Array([1, 2, 3])}}),
     ];
     for (const valid of boundaries) {
-      expect(validateRequest(valid)).toBe(valid);
+      expect(validateRequest(valid)).toEqual(valid);
     }
   });
 
@@ -63,11 +72,18 @@ describe('validateRequest', () => {
     }
   });
 
+  it('accepts an untrained OpenZL row without a candidate count', () => {
+    const untrained: Record<string, unknown> = openZLRow({trainRequested: false});
+    delete untrained.candidates;
+    const valid = request({compressors: [untrained]});
+    expect(validateRequest(valid)).toEqual(valid);
+  });
+
   it('accepts any number of compressors', () => {
     // Every level of every compressor is already a few dozen rows, and nothing
     // about a long run makes it unsafe, only slow.
     const many = request({compressors: Array.from({length: 200}, (_, id) => ({id, compressor: 'gzip', level: 1}))});
-    expect(validateRequest(many)).toBe(many);
+    expect(validateRequest(many)).toEqual(many);
   });
 
   it('rejects an empty or missing compressor list', () => {
@@ -105,6 +121,11 @@ describe('validateRequest', () => {
         'OpenZL candidate count must be between 10 and 25',
       );
     }
+    rejects(
+      request({compressors: [openZLRow({candidates: undefined})]}),
+      RangeError,
+      'OpenZL candidate count must be between 10 and 25',
+    );
     for (const profileArg of [undefined, 'x'.repeat(4097)]) {
       rejects(request({compressors: [openZLRow({profileArg})]}), TypeError, 'OpenZL profile argument is invalid');
     }
@@ -115,7 +136,12 @@ describe('validateRequest', () => {
     for (const path of ['', 'sample\0.bin', 42]) {
       rejects(request({input: {path}}), TypeError, 'Invalid input path');
     }
-    for (const input of [{}, {data: [1, 2, 3]}, {data: new ArrayBuffer(3)}]) {
+    for (const input of [
+      {},
+      {data: [1, 2, 3]},
+      {data: new ArrayBuffer(3)},
+      {path: '/tmp/a', data: new Uint8Array(1)},
+    ]) {
       rejects(request({input}), TypeError, 'Benchmark input must contain a file path or bytes');
     }
   });

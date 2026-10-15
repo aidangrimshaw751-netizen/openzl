@@ -13,7 +13,8 @@ export interface OpenZLCompressor {
   profileArg: string;
   level: number;
   trainRequested: boolean;
-  candidates: number;
+  /** Read only when `trainRequested`. */
+  candidates?: number;
 }
 
 export interface ZliChildEvent {

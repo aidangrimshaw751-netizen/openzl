@@ -59,6 +59,15 @@ require('node:fs').writeFileSync(require('node:path').join(__dirname, 'ready'), 
 setInterval(() => {}, 1000);
 `;
 
+/** Stands in for a zli whose benchmark CSV has a non-numeric srcSize. */
+export const MALFORMED_ZLI = `
+const args = process.argv.slice(2);
+require('node:fs').writeFileSync(
+  args[args.indexOf('--output-csv') + 1],
+  'srcSize,compressedSize,compressionRatio,ctimeMs,dtimeMs,iters,path\\nthree,2,1.5,1,1,1,in\\n',
+);
+`;
+
 export const UNTRAINED = {profile: 'serial', profileArg: '', level: 6, trainRequested: false, candidates: 10};
 
 const fakeZliDirectories: string[] = [];

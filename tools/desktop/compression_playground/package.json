@@ -24,6 +24,9 @@
     "test": "vitest",
     "test:run": "vitest run"
   },
+  "dependencies": {
+    "zod": "4.6.5"
+  },
   "devDependencies": {
     "@electron/fuses": "1.8.0",
     "@eslint/js": "9.36.0",
@@ -64,6 +67,10 @@
         "filter": [
           "zli{,.exe}"
         ]
+      },
+      {
+        "from": "../../web/compression_playground/src/compressorLimits.json",
+        "to": "shared/compressorLimits.json"
       },
       {
         "from": "electron/native-worker.cjs",

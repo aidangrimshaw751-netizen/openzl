@@ -7,7 +7,7 @@ import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {runOpenZLBenchmark, type ZliChildEvent, type ZliStage} from '../electron/zli-client.cjs';
-import {fakeZli, HANGING_ZLI, removeFakeZlis, UNORDERED_CANDIDATES_ZLI, UNTRAINED} from './fakeZli.ts';
+import {fakeZli, HANGING_ZLI, MALFORMED_ZLI, removeFakeZlis, UNORDERED_CANDIDATES_ZLI, UNTRAINED} from './fakeZli.ts';
 
 afterEach(removeFakeZlis);
 
@@ -87,6 +87,12 @@ describe('runOpenZLBenchmark', () => {
     ]);
     expect(runDirectories()).toEqual(before);
   }, 10_000);
+
+  it('rejects a zli benchmark CSV that breaks its format, naming the field', async () => {
+    await expect(runOpenZLBenchmark(fakeZli(MALFORMED_ZLI), {data: new Uint8Array([1])}, UNTRAINED, 1)).rejects.toThrow(
+      'zli returned an unexpected result (srcSize:',
+    );
+  });
 
   it('does not start zli once the run is aborted', async () => {
     const controller = new AbortController();
