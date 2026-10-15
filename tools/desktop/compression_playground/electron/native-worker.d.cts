@@ -1,6 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-import type {ZliChildEvent, ZliStage} from './zli-client.cjs';
+import type {ZliChildEvent} from './zli-client.cjs';
 
 /** One compressor to measure at one level, as the page sends it. */
 export type BenchmarkRow =
@@ -26,10 +26,16 @@ export interface BenchmarkRequest {
 /** What the worker runs: the main process has resolved the sample to its path. */
 export type ResolvedBenchmarkRequest = Omit<BenchmarkRequest, 'input'> & {input: {path: string}};
 
+/** Which of a trained row's candidates a measurement is, from 1, best ratio first. */
+export interface Candidate {
+  index: number;
+  total: number;
+}
+
+/** One measurement. `candidate` is null for every row that does not train. */
 export interface BenchmarkResult {
   rowId: number;
-  label: string;
-  candidate: number;
+  candidate: Candidate | null;
   iterations: number;
   srcSize: number;
   compressedSize: number;
@@ -40,13 +46,21 @@ export interface BenchmarkResult {
   decompressMBps: number;
 }
 
-/** Which row is running, and which stage of it has started. */
-export type BenchmarkProgress = {rowId: number; rowIndex: number; rowCount: number; label: string} & ZliStage;
+/** A row that could not be measured. The run goes on to the next row. */
+export interface BenchmarkFailure {
+  rowId: number;
+  candidate: Candidate | null;
+  message: string;
+}
 
+/**
+ * What a run streams, in the browser worker's `WorkerMessage` vocabulary, with
+ * the row id where the browser has its job.
+ */
 export type BenchmarkEvent =
-  | {type: 'progress'; progress: BenchmarkProgress}
-  /** Results for one row, sent as soon as that row finishes. */
-  | {type: 'partial'; results: BenchmarkResult[]};
+  | {type: 'step'; fraction: number}
+  | {type: 'result'; result: BenchmarkResult}
+  | {type: 'failure'; failure: BenchmarkFailure};
 
 export function run(
   payload: {zliPath: string; zstdBenchmarkPath: string; request: ResolvedBenchmarkRequest; tempRoot?: string},

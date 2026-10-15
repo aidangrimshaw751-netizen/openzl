@@ -11,10 +11,14 @@ const duration = z.number().min(0);
 // Throughput is Infinity when an operation measured 0 ms.
 const throughput = z.number().min(0).or(z.literal(Infinity));
 
+const candidateSchema = z
+  .object({index: z.int().min(1), total: z.int().min(1)})
+  .refine(({index, total}) => index <= total, {message: 'candidate index is past the total', path: ['index']})
+  .nullable();
+
 const resultSchema = z.object({
   rowId: z.int(),
-  label: z.string(),
-  candidate: count,
+  candidate: candidateSchema,
   iterations: z.int().min(1),
   srcSize: count,
   compressedSize: count,
@@ -25,20 +29,16 @@ const resultSchema = z.object({
   decompressMBps: throughput,
 });
 
-const row = {rowId: z.int(), rowIndex: count, rowCount: z.int().min(1), label: z.string()};
-
-const progressSchema = z.discriminatedUnion('stage', [
-  z.object({...row, stage: z.literal('benchmark')}),
-  z.object({...row, stage: z.literal('train')}),
-  z.object({...row, stage: z.literal('candidates'), candidate: z.int().min(1), candidateCount: z.int().min(1)}),
-]);
-
 const workerMessageSchema = z.discriminatedUnion('type', [
   z.object({type: z.literal('child'), pid: z.int().min(1), state: z.enum(['spawned', 'exited'])}),
-  z.object({type: z.literal('progress'), progress: progressSchema}),
-  z.object({type: z.literal('partial'), results: z.array(resultSchema)}),
-  z.object({type: z.literal('results'), results: z.array(resultSchema)}),
-  z.object({type: z.literal('error'), message: z.string()}),
+  z.object({type: z.literal('step'), fraction: z.number().min(0).max(1)}),
+  z.object({type: z.literal('result'), result: resultSchema}),
+  z.object({
+    type: z.literal('failure'),
+    failure: z.object({rowId: z.int(), candidate: candidateSchema, message: z.string()}),
+  }),
+  z.object({type: z.literal('finished')}),
+  z.object({type: z.literal('failed'), message: z.string()}),
   z.object({type: z.literal('cancelled')}),
 ]);
 

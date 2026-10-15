@@ -21,6 +21,13 @@ const eol = process.env.FAKE_ZLI_EOL ?? '\\n';
 const pathColumn = process.env.FAKE_ZLI_PATH_COLUMN !== '0';
 const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 if (args[0] === 'train') {
+  // As zli does at --verbose 3 on a pipe: INFO lines and one line per redraw.
+  if (flag('--verbose') === '3') {
+    process.stderr.write('Using all provided training samples, total size 3\\n');
+    for (const bar of ['[----]', '[==--]', '[====]']) {
+      process.stderr.write(bar + ' Training ACE graph 1 / 1: ACE progress\\n');
+    }
+  }
   const output = flag('--output');
   fs.mkdirSync(output, {recursive: true});
   for (const index of ${JSON.stringify(candidateIndices)}) {

@@ -1,17 +1,22 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-import type {
-  BenchmarkEvent,
-  BenchmarkResult,
-  BenchmarkRow,
-} from '../../../desktop/compression_playground/electron/native-worker.cjs';
-import {buildJobs, type BenchmarkJob, type JobResult, type RunConfig, type RunState} from './benchmarkTypes.ts';
+import type {BenchmarkEvent, BenchmarkRow} from '../../../desktop/compression_playground/electron/native-worker.cjs';
+import {
+  buildJobs,
+  type BenchmarkJob,
+  type RejectedCompressor,
+  type RunConfig,
+  type RunState,
+  type WorkerMessage,
+} from './benchmarkTypes.ts';
 import {inputForFile, type BenchmarkRun, type OpenZLDesktopBridge} from './desktop.ts';
+import {trackRun} from './runTracker.ts';
 
 /**
- * Runs a benchmark through the desktop app's `zli` and folds what comes back
- * into the same `RunState` the browser's worker produces, so everything past
- * the Run button -- progress, table, charts -- is one code path.
+ * Runs a benchmark through the desktop app's `zli`. The backend reports in the
+ * browser worker's message vocabulary, so once each row is matched back to its
+ * job the same `RunTracker` folds it into `RunState`, and everything past the
+ * Run button -- progress, table, charts -- is one code path.
  */
 
 let inFlight = false;
@@ -36,24 +41,22 @@ function rowFor(job: BenchmarkJob, id: number): BenchmarkRow {
   return {id, compressor: job.compressor, level: job.level};
 }
 
-/**
- * A trained job's candidates arrive together, best ratio first and counted from
- * 0 on the wire; the page counts them from 1. Anything else is one measurement.
- */
-function toJobResults(job: BenchmarkJob, rows: readonly BenchmarkResult[]): JobResult[] {
-  const trained = job.compressor === 'OpenZL' && job.training !== null;
-  return rows.map((row) => ({
-    iterations: row.iterations,
-    srcSize: row.srcSize,
-    compressedSize: row.compressedSize,
-    ratio: row.ratio,
-    compressMs: row.compressMs,
-    decompressMs: row.decompressMs,
-    compressMBps: row.compressMBps,
-    decompressMBps: row.decompressMBps,
-    job,
-    candidate: trained ? {index: row.candidate + 1, total: rows.length} : null,
-  }));
+/** The browser's message for a backend event, or undefined for a row this run never sent. */
+function toWorkerMessage(event: BenchmarkEvent, jobs: readonly BenchmarkJob[]): WorkerMessage | undefined {
+  switch (event.type) {
+    case 'step':
+      return event;
+    case 'result': {
+      const {rowId, ...measurement} = event.result;
+      const job = jobs[rowId];
+      return job === undefined ? undefined : {type: 'result', result: {...measurement, job}};
+    }
+    case 'failure': {
+      const {rowId, ...failure} = event.failure;
+      const job = jobs[rowId];
+      return job === undefined ? undefined : {type: 'failure', failure: {...failure, job}};
+    }
+  }
 }
 
 export function runDesktopBenchmark(
@@ -73,22 +76,12 @@ export function runDesktopBenchmark(
   // gets round to starting.
   onState({status: 'loading'});
 
-  const results: JobResult[] = [];
+  const tracker = trackRun();
   let jobs: readonly BenchmarkJob[] = [];
+  let rejected: readonly RejectedCompressor[] = [];
   let run: BenchmarkRun | undefined;
-  let completedJobs = 0;
-  let step: number | null = null;
-  let current = 0;
   let finished = false;
 
-  const progress = (): RunState => ({
-    status: 'running',
-    completedJobs,
-    totalJobs: jobs.length,
-    results: [...results],
-    failures: [],
-    step,
-  });
   // Once only: a run ended by an unknown row is then cancelled, and the
   // cancellation rejecting must not replace the error that caused it.
   const finish = (state: RunState) => {
@@ -100,45 +93,22 @@ export function runDesktopBenchmark(
     onState(state);
   };
   const fail = (message: string) => {
-    finish({status: 'error', message, results, failures: []});
+    finish(tracker.error(message));
   };
 
   function onEvent(event: BenchmarkEvent) {
     if (finished) {
       return;
     }
-    if (event.type === 'partial') {
-      // The row's job is whichever it says it is, or the one that was running
-      // if it measured nothing and so has no result to say.
-      const job: BenchmarkJob | undefined = jobs[event.results[0]?.rowId ?? current];
-      if (job === undefined) {
-        // The backend answered for a row this run never sent. Nothing sensible
-        // can be done with its numbers, and it is still running.
-        run?.cancel();
-        fail('The desktop backend reported a result for a row this run did not ask for');
-        return;
-      }
-      results.push(...toJobResults(job, event.results));
-      completedJobs += 1;
-      step = null;
-      onState(progress());
+    const message = toWorkerMessage(event, jobs);
+    if (message === undefined) {
+      // The backend answered for a row this run never sent. Nothing sensible
+      // can be done with its numbers, and it is still running.
+      run?.cancel();
+      fail('The desktop backend reported a result for a row this run did not ask for');
       return;
     }
-    const stage = event.progress;
-    current = stage.rowId;
-    switch (stage.stage) {
-      case 'benchmark':
-      case 'train':
-        // Training has no known length -- `zli train` runs until it is done --
-        // so there is no fraction to report for it, and a quick benchmark has
-        // nothing worth one.
-        step = null;
-        break;
-      case 'candidates':
-        step = (stage.candidate - 1) / stage.candidateCount;
-        break;
-    }
-    onState(progress());
+    onState(tracker.apply(message));
   }
 
   // Everything that can throw is inside the chain rather than called here: a
@@ -147,11 +117,7 @@ export function runDesktopBenchmark(
   // a path for, and `buildJobs` for a config that is not shaped as expected.
   Promise.resolve()
     .then(() => {
-      const plan = buildJobs(config, {desktop: true});
-      jobs = plan.jobs;
-      for (const row of plan.rejected) {
-        console.warn(`OpenZL: row ${String(row.rowId)} produced no jobs -- ${row.message}`);
-      }
+      ({jobs, rejected} = buildJobs(config, {desktop: true}));
       return inputForFile(config.input, bridge);
     })
     .then((input) => {
@@ -159,12 +125,12 @@ export function runDesktopBenchmark(
         {input, iterations: config.iterations, compressors: jobs.map((job, id) => rowFor(job, id))},
         onEvent,
       );
-      onState(progress());
-      return run.results;
+      onState(tracker.apply({type: 'started', totalJobs: jobs.length, rejected}));
+      return run.done;
     })
     .then(
       () => {
-        finish({status: 'completed', results, failures: []});
+        finish(tracker.apply({type: 'finished'}));
       },
       (error: unknown) => {
         fail(error instanceof Error ? error.message : String(error));

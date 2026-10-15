@@ -7,20 +7,21 @@
 const {contextBridge, ipcRenderer, webUtils} = require('electron');
 
 // Each run gets its own port, so the page never handles IPC or ports directly.
-// `onEvent` receives progress and partial-result events until the run ends.
+// `onEvent` receives each `step`, `result` and `failure` until the run ends;
+// `done` then settles, rejecting if the run failed or was cancelled.
 function startBenchmark(request, onEvent) {
   const {port1, port2} = new MessageChannel();
   let settled = false;
-  const results = new Promise((resolve, reject) => {
+  const done = new Promise((resolve, reject) => {
     port1.onmessage = ({data}) => {
-      if (data.type === 'progress' || data.type === 'partial') {
+      if (data?.type === 'step' || data?.type === 'result' || data?.type === 'failure') {
         onEvent?.(data);
         return;
       }
       settled = true;
       port1.close();
-      if (data?.type === 'results') {
-        resolve(data.results);
+      if (data?.type === 'finished') {
+        resolve();
       } else {
         reject(new Error(data?.type === 'cancelled' ? 'Benchmark cancelled' : (data?.message ?? 'Benchmark failed')));
       }
@@ -33,7 +34,7 @@ function startBenchmark(request, onEvent) {
       port1.postMessage({type: 'cancel'});
     }
   };
-  return Object.freeze({results, cancel});
+  return Object.freeze({done, cancel});
 }
 
 contextBridge.exposeInMainWorld(

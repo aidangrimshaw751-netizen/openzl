@@ -249,26 +249,26 @@ describe('on a page that is not cross-origin isolated', () => {
  */
 function answeringBridge(getPathForFile: OpenZLDesktopBridge['getPathForFile'] = () => '/tmp/dataset.bin') {
   const startBenchmark = vi.fn((request: BenchmarkRequest, onEvent?: (event: BenchmarkEvent) => void) => {
-    const all: BenchmarkResult[] = [];
     for (const row of request.compressors) {
       const trained = row.compressor === 'OpenZL' && row.trainRequested;
-      const rowResults = Array.from({length: trained ? 3 : 1}, (_, candidate) => ({
-        rowId: row.id,
-        label: `row ${String(row.id)}`,
-        candidate,
-        iterations: request.iterations,
-        srcSize: 5_000_000,
-        compressedSize: 1_000_000,
-        ratio: 5,
-        compressMs: 10,
-        decompressMs: 5,
-        compressMBps: 100,
-        decompressMBps: 200,
-      }));
-      all.push(...rowResults);
-      onEvent?.({type: 'partial', results: rowResults});
+      const total = trained ? 3 : 1;
+      for (let index = 1; index <= total; index += 1) {
+        const result: BenchmarkResult = {
+          rowId: row.id,
+          candidate: trained ? {index, total} : null,
+          iterations: request.iterations,
+          srcSize: 5_000_000,
+          compressedSize: 1_000_000,
+          ratio: 5,
+          compressMs: 10,
+          decompressMs: 5,
+          compressMBps: 100,
+          decompressMBps: 200,
+        };
+        onEvent?.({type: 'result', result});
+      }
     }
-    return {results: Promise.resolve(all), cancel: vi.fn()};
+    return {done: Promise.resolve(), cancel: vi.fn()};
   });
   window.openzlDesktop = {startBenchmark, getPathForFile};
   return startBenchmark;
