@@ -8,6 +8,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
+const {assertReadableByZli, mayNotReachZliIntact, windowsAnsiCodePage} = require('./ansi-path.cjs');
 const {z} = require('zod');
 
 const TRAINING_THREADS = Math.min(4, Math.max(1, os.availableParallelism()));
@@ -201,15 +202,35 @@ async function runOpenZLBenchmark(
   input,
   compressor,
   iterations,
-  {signal, onChild, onStage, tempRoot = os.tmpdir()} = {},
+  {signal, onChild, onStage, tempRoot = os.tmpdir(), codePage} = {},
 ) {
   const context = {signal, onChild};
+  // Before anything is created or spawned: on Windows zli reads paths in the
+  // ANSI code page, and every file of the run lives under the temp folder.
+  const onWindows = codePage !== undefined || process.platform === 'win32';
+  const ansiCodePage = codePage ?? (onWindows ? await windowsAnsiCodePage() : undefined);
+  if (ansiCodePage !== undefined) {
+    assertReadableByZli(
+      tempRoot,
+      'The temporary folder path',
+      'Set the TEMP environment variable to a folder whose path uses only characters in that code page.',
+      ansiCodePage,
+    );
+  }
   const workDirectory = await fs.mkdtemp(path.join(tempRoot, 'openzl-playground-'));
   try {
     let inputPath;
     if ('path' in input) {
       // Absolute paths never start with '-', so zli cannot parse them as flags.
       inputPath = path.resolve(input.path);
+      // zli would get a path the code page cannot represent mangled, so it
+      // reads a copy in the work directory, whose path passed the check above.
+      // When the code page could not be checked, any path past ASCII is copied.
+      if (onWindows && mayNotReachZliIntact(inputPath, ansiCodePage)) {
+        const copy = path.join(workDirectory, 'input.bin');
+        await fs.copyFile(inputPath, copy);
+        inputPath = copy;
+      }
     } else {
       inputPath = path.join(workDirectory, 'input.bin');
       await fs.writeFile(inputPath, Buffer.from(input.data.buffer, input.data.byteOffset, input.data.byteLength));

@@ -79,6 +79,10 @@
       {
         "from": "electron/zli-client.cjs",
         "to": "native/zli-client.cjs"
+      },
+      {
+        "from": "electron/ansi-path.cjs",
+        "to": "native/ansi-path.cjs"
       }
     ],
     "asar": true,

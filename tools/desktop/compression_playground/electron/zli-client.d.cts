@@ -32,6 +32,8 @@ export interface RunOptions {
   onChild?: (event: ZliChildEvent) => void;
   onStage?: (stage: ZliStage) => void;
   tempRoot?: string;
+  /** The Windows ANSI code page, for tests. On win32 it is read from the registry; elsewhere paths are not checked. */
+  codePage?: number;
 }
 
 export function runOpenZLBenchmark(
