@@ -186,6 +186,7 @@ async function main() {
             }
             await new Promise((resolve) => setTimeout(resolve, 50));
           }
+          const events = [];
           const results = await window.openzlDesktop.startBenchmark({
             input: {path: ${JSON.stringify(sample)}},
             iterations: 1,
@@ -193,12 +194,22 @@ async function main() {
               {id: 1, compressor: 'OpenZL', level: 1, profile: 'serial', trainRequested: false, candidates: 10, profileArg: ''},
               {id: 2, compressor: 'zstd', level: 3},
             ],
-          }).results;
-          return {origin: location.origin, labels: results.map((r) => r.label), srcSizes: results.map((r) => r.srcSize)};
+          }, (event) => events.push(event.type === 'progress' ? event.progress.label + ': ' + event.progress.stage : 'partial: ' + event.results.map((r) => r.label).join())).results;
+          return {
+            origin: location.origin,
+            labels: results.map((r) => r.label),
+            srcSizes: results.map((r) => r.srcSize),
+            events,
+          };
         })()`,
       );
       const size = fs.statSync(sample).size;
-      assert.deepEqual(page, {origin: 'app://bundle', labels: ['OpenZL serial', 'zstd 3'], srcSizes: [size, size]});
+      assert.deepEqual(page, {
+        origin: 'app://bundle',
+        labels: ['OpenZL serial', 'zstd 3'],
+        srcSizes: [size, size],
+        events: ['OpenZL serial: benchmark', 'partial: OpenZL serial', 'zstd 3: benchmark', 'partial: zstd 3'],
+      });
       assert.ok(!app.output.stderr.includes('Debugger listening'), '--inspect opened a debugger');
       process.stdout.write(
         `${JSON.stringify({ok: true, executable, fuses, runAsNodeHonoured: false, inspectOpened: false, page}, null, 2)}\n`,

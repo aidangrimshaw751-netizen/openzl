@@ -7,11 +7,16 @@
 const {contextBridge, ipcRenderer, webUtils} = require('electron');
 
 // Each run gets its own port, so the page never handles IPC or ports directly.
-function startBenchmark(request) {
+// `onEvent` receives progress and partial-result events until the run ends.
+function startBenchmark(request, onEvent) {
   const {port1, port2} = new MessageChannel();
   let settled = false;
   const results = new Promise((resolve, reject) => {
     port1.onmessage = ({data}) => {
+      if (data.type === 'progress' || data.type === 'partial') {
+        onEvent?.(data);
+        return;
+      }
       settled = true;
       port1.close();
       if (data?.type === 'results') {
