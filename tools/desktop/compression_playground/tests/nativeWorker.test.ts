@@ -2,6 +2,9 @@
 
 // @vitest-environment node
 
+import {existsSync, mkdtempSync, readFileSync, rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {dirname, join} from 'node:path';
 import {afterEach, describe, expect, it} from 'vitest';
 import {run, type BenchmarkEvent} from '../electron/native-worker.cjs';
 import {fakeZli, removeFakeZlis, UNORDERED_CANDIDATES_ZLI} from './fakeZli.ts';
@@ -96,6 +99,39 @@ describe('run', () => {
       'step 0.95',
       'result 4',
     ]);
+  });
+
+  it('writes the input once for the whole run, and every row reads that file', async () => {
+    const seen = join(mkdtempSync(join(tmpdir(), 'native-worker-test-')), 'seen.txt');
+    const zliPath = fakeZli(`
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(seen)}, args[1] + '\\n');
+fs.writeFileSync(
+  args[args.indexOf('--output-csv') + 1],
+  'srcSize,compressedSize,compressionRatio,ctimeMs,dtimeMs,iters\\n3,2,1.5,1,1,1\\n',
+);
+`);
+    const row = {compressor: 'OpenZL', level: 1, trainRequested: false, candidates: 10, profileArg: ''} as const;
+    const results = await run({
+      zliPath,
+      request: {
+        input: {data: new Uint8Array([1, 2, 3])},
+        iterations: 1,
+        compressors: [
+          {...row, id: 1, profile: 'serial'},
+          {...row, id: 2, profile: 'le-u32'},
+        ],
+      },
+    });
+
+    expect(results).toHaveLength(2);
+    const paths = readFileSync(seen, 'utf8').trim().split('\n');
+    expect(paths).toHaveLength(2);
+    expect(paths[1]).toBe(paths[0]);
+    // Removed with the run.
+    expect(existsSync(paths[0])).toBe(false);
+    rmSync(dirname(seen), {recursive: true, force: true});
   });
 
   it('reports a row it cannot measure as a failure and goes on to the next', async () => {

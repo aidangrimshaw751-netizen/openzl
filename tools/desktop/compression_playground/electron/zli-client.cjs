@@ -8,6 +8,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
+const {assertReadableByZli, mayNotReachZliIntact, windowsAnsiCodePage} = require('./ansi-path.cjs');
 const {z} = require('zod');
 
 const TRAINING_THREADS = Math.min(4, Math.max(1, os.availableParallelism()));
@@ -256,6 +257,47 @@ async function trainedCandidatePaths(zliPath, inputPath, compressor, outputDirec
 }
 
 /**
+ * A path zli can read `input` at, made once so every row of a run reads the
+ * same file rather than each writing or copying its own: bytes are written to
+ * a file, and on Windows, where zli reads paths in the ANSI code page, a path
+ * the code page may not represent is copied to one it can. When the code page
+ * could not be checked, any path past ASCII is copied. Throws before writing
+ * anything if the temp folder itself cannot be represented, since every file
+ * of the run lives under it. `dispose` removes whatever it wrote.
+ */
+async function prepareInput(input, {tempRoot = os.tmpdir(), codePage} = {}) {
+  const onWindows = codePage !== undefined || process.platform === 'win32';
+  const ansiCodePage = codePage ?? (onWindows ? await windowsAnsiCodePage() : undefined);
+  if (ansiCodePage !== undefined) {
+    assertReadableByZli(
+      tempRoot,
+      'The temporary folder path',
+      'Set the TEMP environment variable to a folder whose path uses only characters in that code page.',
+      ansiCodePage,
+    );
+  }
+  // Absolute paths never start with '-', so zli cannot parse them as flags.
+  const inputPath = 'path' in input ? path.resolve(input.path) : undefined;
+  if (inputPath !== undefined && !(onWindows && mayNotReachZliIntact(inputPath, ansiCodePage))) {
+    return {path: inputPath, dispose: () => Promise.resolve()};
+  }
+  const directory = await fs.mkdtemp(path.join(tempRoot, 'openzl-input-'));
+  const dispose = () => fs.rm(directory, {recursive: true, force: true});
+  const preparedPath = path.join(directory, 'input.bin');
+  try {
+    if (inputPath === undefined) {
+      await fs.writeFile(preparedPath, Buffer.from(input.data.buffer, input.data.byteOffset, input.data.byteLength));
+    } else {
+      await fs.copyFile(inputPath, preparedPath);
+    }
+  } catch (error) {
+    await dispose();
+    throw error;
+  }
+  return {path: preparedPath, dispose};
+}
+
+/**
  * zli train benchmarks candidates at a fixed iteration count and has no
  * --level, so each candidate is re-benchmarked with the requested settings.
  * Aborting `signal` stops the running zli and rejects with `signal.reason`.
@@ -270,19 +312,16 @@ async function runOpenZLBenchmark(
   input,
   compressor,
   iterations,
-  {signal, onChild, onStage, onMeasurement, tempRoot = os.tmpdir()} = {},
+  {signal, onChild, onStage, onMeasurement, tempRoot = os.tmpdir(), codePage} = {},
 ) {
   const context = {signal, onChild};
-  const workDirectory = await fs.mkdtemp(path.join(tempRoot, 'openzl-playground-'));
+  // Before anything is created or spawned. A path the worker already
+  // prepared passes through as it is.
+  const prepared = await prepareInput(input, {tempRoot, codePage});
+  let workDirectory;
   try {
-    let inputPath;
-    if ('path' in input) {
-      // Absolute paths never start with '-', so zli cannot parse them as flags.
-      inputPath = path.resolve(input.path);
-    } else {
-      inputPath = path.join(workDirectory, 'input.bin');
-      await fs.writeFile(inputPath, Buffer.from(input.data.buffer, input.data.byteOffset, input.data.byteLength));
-    }
+    workDirectory = await fs.mkdtemp(path.join(tempRoot, 'openzl-playground-'));
+    const inputPath = prepared.path;
 
     if (!compressor.trainRequested) {
       onStage?.({stage: 'benchmark'});
@@ -323,8 +362,11 @@ async function runOpenZLBenchmark(
     }
     return results;
   } finally {
-    await fs.rm(workDirectory, {recursive: true, force: true});
+    if (workDirectory !== undefined) {
+      await fs.rm(workDirectory, {recursive: true, force: true});
+    }
+    await prepared.dispose();
   }
 }
 
-module.exports = {runOpenZLBenchmark};
+module.exports = {prepareInput, runOpenZLBenchmark};
