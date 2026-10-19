@@ -7,7 +7,7 @@ import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {runOpenZLBenchmark, type ZliChildEvent, type ZliStage} from '../electron/zli-client.cjs';
-import {fakeZli, HANGING_ZLI, removeFakeZlis, UNORDERED_CANDIDATES_ZLI, UNTRAINED} from './fakeZli.ts';
+import {fakeZli, HANGING_ZLI, MALFORMED_ZLI, removeFakeZlis, UNORDERED_CANDIDATES_ZLI, UNTRAINED} from './fakeZli.ts';
 
 afterEach(removeFakeZlis);
 
@@ -181,6 +181,25 @@ process.exit(1);
     ]);
     expect(runDirectories()).toEqual(before);
   }, 10_000);
+
+  it('rejects a zli benchmark CSV that breaks its format, naming the field', async () => {
+    await expect(runOpenZLBenchmark(fakeZli(MALFORMED_ZLI), {data: new Uint8Array([1])}, UNTRAINED, 1)).rejects.toThrow(
+      'zli returned an unexpected result (srcSize:',
+    );
+  });
+
+  it('rejects a timing that is not finite', async () => {
+    const infiniteTiming = fakeZli(`
+const args = process.argv.slice(2);
+require('node:fs').writeFileSync(
+  args[args.indexOf('--output-csv') + 1],
+  'srcSize,compressedSize,compressionRatio,ctimeMs,dtimeMs,iters,path\\n3,2,1.5,Infinity,1,1,in\\n',
+);
+`);
+    await expect(runOpenZLBenchmark(infiniteTiming, {data: new Uint8Array([1])}, UNTRAINED, 1)).rejects.toThrow(
+      'zli returned an unexpected result (ctimeMs:',
+    );
+  });
 
   it('does not start zli once the run is aborted', async () => {
     const controller = new AbortController();
