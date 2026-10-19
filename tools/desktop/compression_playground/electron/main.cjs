@@ -4,14 +4,24 @@
 
 'use strict';
 
+const fs = require('node:fs');
 const path = require('node:path');
-const {app, BrowserWindow, dialog, ipcMain, Menu, session, shell, utilityProcess} = require('electron');
+const {pathToFileURL} = require('node:url');
+const {app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session, shell, utilityProcess} = require('electron');
+const {APP_ORIGIN, APP_SCHEME, originOf, resolveBundlePath} = require('./app-protocol.cjs');
 const {validateRequest} = require('./benchmark-request.cjs');
 const {isAllowedExternalUrl} = require('./external-links.cjs');
 
 const BENCHMARK_CHANNEL = 'openzl:benchmark';
 
 let mainWindow;
+let rendererOrigin;
+
+// Must run before the app is ready. A standard, secure scheme gives the bundle a
+// real origin, so CSP 'self', fetch, and module scripts behave as on the web.
+protocol.registerSchemesAsPrivileged([
+  {scheme: APP_SCHEME, privileges: {standard: true, secure: true, supportFetchAPI: true}},
+]);
 
 function zliPath() {
   const executable = process.platform === 'win32' ? 'zli.exe' : 'zli';
@@ -27,9 +37,40 @@ function nativeHostPath() {
 }
 
 function isTrustedSender(event) {
-  return (
-    mainWindow !== undefined && event.sender === mainWindow.webContents && event.senderFrame === event.sender.mainFrame
-  );
+  if (
+    mainWindow === undefined ||
+    event.sender !== mainWindow.webContents ||
+    event.senderFrame !== event.sender.mainFrame
+  ) {
+    return false;
+  }
+  // Both sides can be undefined, and undefined === undefined must not pass.
+  const origin = originOf(event.senderFrame.url);
+  return origin !== undefined && origin === rendererOrigin;
+}
+
+function serveRenderer() {
+  const root = path.join(__dirname, '..', 'dist');
+  protocol.handle(APP_SCHEME, async (request) => {
+    const filePath = resolveBundlePath(root, request.url);
+    if (filePath === undefined) {
+      return new Response('Not found', {status: 404});
+    }
+    try {
+      // fs reads into the asar archive, so this works packaged too.
+      await fs.promises.access(filePath);
+      return await net.fetch(pathToFileURL(filePath).toString());
+    } catch (error) {
+      // A path inside the bundle can still name a file that is not there. Any
+      // other failure is a real read error, logged so a page that will not
+      // load can be diagnosed rather than looking like a missing file.
+      if (error.code === 'ENOENT' || error.code === 'ENOTDIR') {
+        return new Response('Not found', {status: 404});
+      }
+      console.error(`Could not serve ${request.url}: ${error.message}`);
+      return new Response('Could not read the file', {status: 500});
+    }
+  });
 }
 
 /**
@@ -131,18 +172,21 @@ async function createWindow() {
     .find((argument) => argument.startsWith('--dev-server='))
     ?.slice('--dev-server='.length);
   if (!app.isPackaged && devServer !== undefined) {
+    rendererOrigin = originOf(devServer);
     await mainWindow.loadURL(devServer);
     if (process.argv.includes('--devtools')) {
       mainWindow.webContents.openDevTools({mode: 'detach'});
     }
   } else {
-    await mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+    rendererOrigin = APP_ORIGIN;
+    await mainWindow.loadURL(`${APP_ORIGIN}/index.html`);
   }
 }
 
 const started = app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   denyPermissions();
+  serveRenderer();
   registerIpc();
   await createWindow();
   app.on('activate', () => {

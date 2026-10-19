@@ -15,6 +15,7 @@
     "build:native": "cmake -S electron/native -B electron/native/build -DCMAKE_BUILD_TYPE=Release && cmake --build electron/native/build --config Release --target zli",
     "test:native": "yarn build:native && node electron/tests/native-training-smoke.cjs",
     "test:security": "yarn build:renderer && electron electron/tests/window-security-smoke.cjs",
+    "test:packaged": "yarn package && node electron/tests/packaged-app-smoke.cjs",
     "build": "yarn build:renderer && yarn build:native && electron-builder",
     "package": "yarn build:renderer && yarn build:native && electron-builder --dir",
     "lint": "eslint .",
@@ -23,6 +24,7 @@
     "test:run": "vitest run"
   },
   "devDependencies": {
+    "@electron/fuses": "1.8.0",
     "@eslint/js": "9.36.0",
     "@types/node": "24.13.3",
     "concurrently": "9.2.1",
@@ -50,6 +52,7 @@
     "files": [
       "dist/**/*",
       "electron/*.cjs",
+      "!electron/after-pack.cjs",
       "package.json",
       "!node_modules/**/*"
     ],
@@ -71,6 +74,7 @@
       }
     ],
     "asar": true,
+    "afterPack": "electron/after-pack.cjs",
     "directories": {
       "output": "release"
     },
