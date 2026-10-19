@@ -21,9 +21,17 @@ export interface ZliChildEvent {
   state: 'spawned' | 'exited';
 }
 
+export type ZliStage =
+  | {stage: 'benchmark'}
+  | {stage: 'train'; fraction?: number}
+  | {stage: 'candidates'; candidate: number; candidateCount: number};
+
 export interface RunOptions {
   signal?: AbortSignal;
   onChild?: (event: ZliChildEvent) => void;
+  onStage?: (stage: ZliStage) => void;
+  /** Each measurement as it is made: its index from 0, and how many there will be. */
+  onMeasurement?: (result: ZliBenchmarkResult, index: number, total: number) => void;
   tempRoot?: string;
 }
 
