@@ -16,9 +16,21 @@ export interface OpenZLCompressor {
   candidates: number;
 }
 
+export interface ZliChildEvent {
+  pid: number;
+  state: 'spawned' | 'exited';
+}
+
+export interface RunOptions {
+  signal?: AbortSignal;
+  onChild?: (event: ZliChildEvent) => void;
+  tempRoot?: string;
+}
+
 export function runOpenZLBenchmark(
   zliPath: string,
   input: {path: string} | {data: Uint8Array},
   compressor: OpenZLCompressor,
   iterations: number,
+  options?: RunOptions,
 ): Promise<ZliBenchmarkResult[]>;
