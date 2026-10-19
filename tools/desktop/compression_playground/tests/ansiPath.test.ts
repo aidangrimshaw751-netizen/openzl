@@ -5,8 +5,8 @@
 import childProcess from 'node:child_process';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {
-  assertReadableByZli,
-  mayNotReachZliIntact,
+  assertReadableByNativeTools,
+  mayNotReachNativeToolsIntact,
   parseCodePage,
   unrepresentableCharacters,
   windowsAnsiCodePage,
@@ -74,24 +74,24 @@ describe('unrepresentableCharacters', () => {
   });
 });
 
-describe('assertReadableByZli', () => {
+describe('assertReadableByNativeTools', () => {
   it('says what is wrong, which code page, and how to fix it', () => {
     expect(() => {
-      assertReadableByZli('C:\\Users\\Rīgā\\a.bin', 'The input path', 'Rename the file.', 1252);
+      assertReadableByNativeTools('C:\\Users\\Rīgā\\a.bin', 'The input path', 'Rename the file.', 1252);
     }).toThrow(
-      'The input path contains "ī", "ā", which this PC\'s ANSI code page (1252) cannot represent, and the OpenZL command-line tool reads paths in that code page. Rename the file.',
+      'The input path contains "ī", "ā", which this PC\'s ANSI code page (1252) cannot represent, and the native benchmark tools (zli, zstd-benchmark) read paths in that code page. Rename the file.',
     );
   });
 
   it('shows three characters and says there are more', () => {
     expect(() => {
-      assertReadableByZli('C:\\ユーザー\\データ.bin', 'The input path', 'Rename it.', 1252);
+      assertReadableByNativeTools('C:\\ユーザー\\データ.bin', 'The input path', 'Rename it.', 1252);
     }).toThrow(/contains "[^"]", "[^"]", "[^"]" and more, which/);
   });
 
   it('is silent for a path the code page can read', () => {
     expect(() => {
-      assertReadableByZli('C:\\Users\\José\\a.bin', 'The input path', 'Rename it.', 1252);
+      assertReadableByNativeTools('C:\\Users\\José\\a.bin', 'The input path', 'Rename it.', 1252);
     }).not.toThrow();
   });
 });
@@ -115,28 +115,28 @@ describe('parseCodePage', () => {
   });
 });
 
-describe('mayNotReachZliIntact', () => {
+describe('mayNotReachNativeToolsIntact', () => {
   it('passes what the code page can represent, and ASCII and UTF-8 always', () => {
-    expect(mayNotReachZliIntact('C:\\Users\\alex\\data.bin', undefined)).toBe(false);
-    expect(mayNotReachZliIntact('C:\\Users\\José\\café.bin', 1252)).toBe(false);
-    expect(mayNotReachZliIntact('C:\\Users\\Rīgā\\data.bin', 65001)).toBe(false);
+    expect(mayNotReachNativeToolsIntact('C:\\Users\\alex\\data.bin', undefined)).toBe(false);
+    expect(mayNotReachNativeToolsIntact('C:\\Users\\José\\café.bin', 1252)).toBe(false);
+    expect(mayNotReachNativeToolsIntact('C:\\Users\\Rīgā\\data.bin', 65001)).toBe(false);
   });
 
   it('flags what the code page cannot represent', () => {
-    expect(mayNotReachZliIntact('C:\\Users\\Rīgā\\data.bin', 1252)).toBe(true);
+    expect(mayNotReachNativeToolsIntact('C:\\Users\\Rīgā\\data.bin', 1252)).toBe(true);
   });
 
   it('assumes the worst past ASCII when the code page cannot be checked', () => {
     // Unread, and not one it knows. Copying an input is safe, unlike refusing it.
-    expect(mayNotReachZliIntact('C:\\Users\\José\\café.bin', undefined)).toBe(true);
-    expect(mayNotReachZliIntact('C:\\Users\\José\\café.bin', 99999)).toBe(true);
+    expect(mayNotReachNativeToolsIntact('C:\\Users\\José\\café.bin', undefined)).toBe(true);
+    expect(mayNotReachNativeToolsIntact('C:\\Users\\José\\café.bin', 99999)).toBe(true);
   });
 
   it('copies anything past ASCII for code pages whose decoder is not exactly Windows’ table', () => {
     // GB18030 decoders in newer ICU map 0xA8BC to ḿ; CP936 does not have it.
-    expect(mayNotReachZliIntact('C:\\Users\\ḿ\\data.bin', 936)).toBe(true);
-    expect(mayNotReachZliIntact('C:\\Users\\갂\\data.bin', 949)).toBe(true);
-    expect(mayNotReachZliIntact('C:\\Users\\data.bin', 950)).toBe(false);
+    expect(mayNotReachNativeToolsIntact('C:\\Users\\ḿ\\data.bin', 936)).toBe(true);
+    expect(mayNotReachNativeToolsIntact('C:\\Users\\갂\\data.bin', 949)).toBe(true);
+    expect(mayNotReachNativeToolsIntact('C:\\Users\\data.bin', 950)).toBe(false);
   });
 });
 

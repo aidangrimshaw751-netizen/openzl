@@ -7,7 +7,7 @@ import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {afterEach, describe, expect, it} from 'vitest';
 import {run, type BenchmarkEvent} from '../electron/native-worker.cjs';
-import {fakeZli, removeFakeZlis, UNORDERED_CANDIDATES_ZLI} from './fakeZli.ts';
+import {FAKE_ZSTD_BENCHMARK, fakeZli, removeFakeZlis, UNORDERED_CANDIDATES_ZLI} from './fakeZli.ts';
 
 afterEach(removeFakeZlis);
 
@@ -17,6 +17,7 @@ describe('run', () => {
     const results = await run(
       {
         zliPath: fakeZli(),
+        zstdBenchmarkPath: fakeZli(FAKE_ZSTD_BENCHMARK, 'zstd-benchmark'),
         request: {
           input: {data: new TextEncoder().encode('OpenZL '.repeat(1000))},
           iterations: 2,
@@ -30,7 +31,8 @@ describe('run', () => {
               candidates: 10,
               profileArg: '',
             },
-            {id: 2, compressor: 'gzip', level: 5},
+            {id: 2, compressor: 'zstd', level: 3},
+            {id: 3, compressor: 'gzip', level: 5},
           ],
         },
       },
@@ -50,8 +52,9 @@ describe('run', () => {
       {type: 'step', fraction: 0.8},
       {result: 1, candidate: {index: 1, total: 1}},
       {result: 2, candidate: null},
+      {result: 3, candidate: null},
     ]);
-    expect(results.map((result) => result.rowId)).toEqual([1, 2]);
+    expect(results.map((result) => result.rowId)).toEqual([1, 2, 3]);
   });
 
   it('sends each trained candidate’s result as soon as it is measured', async () => {
@@ -59,6 +62,7 @@ describe('run', () => {
     await run(
       {
         zliPath: fakeZli(UNORDERED_CANDIDATES_ZLI),
+        zstdBenchmarkPath: fakeZli(FAKE_ZSTD_BENCHMARK, 'zstd-benchmark'),
         request: {
           input: {data: new Uint8Array(100)},
           iterations: 1,
@@ -115,6 +119,7 @@ fs.writeFileSync(
     const row = {compressor: 'OpenZL', level: 1, trainRequested: false, candidates: 10, profileArg: ''} as const;
     const results = await run({
       zliPath,
+      zstdBenchmarkPath: fakeZli(FAKE_ZSTD_BENCHMARK, 'zstd-benchmark'),
       request: {
         input: {data: new Uint8Array([1, 2, 3])},
         iterations: 1,
@@ -138,20 +143,16 @@ fs.writeFileSync(
     const events: BenchmarkEvent[] = [];
     const results = await run(
       {
-        zliPath: fakeZli("process.stderr.write('Profile not found\\n'); process.exit(1);"),
+        zliPath: fakeZli(),
+        zstdBenchmarkPath: fakeZli(
+          "process.stderr.write('Cannot open input file\\n'); process.exit(1);",
+          'zstd-benchmark',
+        ),
         request: {
           input: {data: new Uint8Array(100)},
           iterations: 1,
           compressors: [
-            {
-              id: 1,
-              compressor: 'OpenZL',
-              level: 1,
-              profile: 'bogus',
-              trainRequested: false,
-              candidates: 10,
-              profileArg: '',
-            },
+            {id: 1, compressor: 'zstd', level: 3},
             {id: 2, compressor: 'gzip', level: 5},
           ],
         },
@@ -162,7 +163,7 @@ fs.writeFileSync(
     expect(events.map((event) => event.type)).toEqual(['failure', 'result']);
     expect(events[0]).toEqual({
       type: 'failure',
-      failure: {rowId: 1, candidate: null, message: expect.stringContaining('Profile not found')},
+      failure: {rowId: 1, candidate: null, message: expect.stringContaining('Cannot open input file')},
     });
     expect(results.map((result) => result.rowId)).toEqual([2]);
   });
@@ -176,6 +177,7 @@ fs.writeFileSync(
       run(
         {
           zliPath: fakeZli(),
+          zstdBenchmarkPath: fakeZli(FAKE_ZSTD_BENCHMARK, 'zstd-benchmark'),
           request: {
             input: {data: new Uint8Array(100)},
             iterations: 1,
@@ -186,5 +188,26 @@ fs.writeFileSync(
       ),
     ).rejects.toThrow('Benchmark cancelled');
     expect(events).toEqual([]);
+  });
+
+  it('measures zstd with zstd-benchmark and derives throughput from its timings', async () => {
+    const [result] = await run({
+      zliPath: fakeZli(),
+      zstdBenchmarkPath: fakeZli(FAKE_ZSTD_BENCHMARK, 'zstd-benchmark'),
+      request: {
+        input: {data: new Uint8Array(4000)},
+        iterations: 5,
+        compressors: [{id: 1, compressor: 'zstd', level: 9}],
+      },
+    });
+
+    // 4000 bytes, 5 times: 20 kB in 2 ms to compress and 1 ms to decompress.
+    expect(result).toMatchObject({
+      srcSize: 4000,
+      compressedSize: 9,
+      ratio: 4000 / 9,
+      compressMBps: 10,
+      decompressMBps: 20,
+    });
   });
 });
