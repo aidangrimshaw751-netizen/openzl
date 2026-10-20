@@ -9,11 +9,24 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
-const {app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session, shell, utilityProcess} = require('electron');
+const {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  Menu,
+  net,
+  protocol,
+  session,
+  shell,
+  utilityProcess,
+} = require('electron');
+const {menuTemplate} = require('./app-menu.cjs');
 const {APP_ORIGIN, APP_SCHEME, originOf, resolveBundlePath} = require('./app-protocol.cjs');
 const {validateRequest} = require('./benchmark-request.cjs');
 const {parseWorkerMessage} = require('./worker-messages.cjs');
-const {isAllowedExternalUrl} = require('./external-links.cjs');
+const {canOpenExternally, isAllowedExternalUrl} = require('./external-links.cjs');
 
 const BENCHMARK_CHANNEL = 'openzl:benchmark';
 const CANCEL_GRACE_MS = 5000;
@@ -296,6 +309,32 @@ function registerIpc() {
   });
 }
 
+/**
+ * Opens an allowed link in the system browser. Where the system has no way to
+ * (Linux without xdg-open, which Electron would fail at silently), the link is
+ * shown in a dialog to copy instead of the click doing nothing.
+ */
+async function openExternalLink(url) {
+  if (!isAllowedExternalUrl(url)) {
+    return;
+  }
+  if (canOpenExternally()) {
+    await shell.openExternal(url);
+    return;
+  }
+  const {response} = await dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    message: 'This link cannot be opened in a browser from here',
+    detail: `${url}\n\nThis system has no xdg-open. Install xdg-utils (on WSL, wslu too), or copy the link into a browser.`,
+    buttons: ['Copy Link', 'Close'],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (response === 0) {
+    clipboard.writeText(url);
+  }
+}
+
 async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1320,
@@ -312,16 +351,12 @@ async function createWindow() {
   });
 
   mainWindow.webContents.setWindowOpenHandler(({url}) => {
-    if (isAllowedExternalUrl(url)) {
-      void shell.openExternal(url);
-    }
+    void openExternalLink(url);
     return {action: 'deny'};
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
     event.preventDefault();
-    if (isAllowedExternalUrl(url)) {
-      void shell.openExternal(url);
-    }
+    void openExternalLink(url);
   });
 
   const devServer = process.argv
@@ -340,7 +375,15 @@ async function createWindow() {
 }
 
 const started = app.whenReady().then(async () => {
-  Menu.setApplicationMenu(null);
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate(
+      menuTemplate({
+        platform: process.platform,
+        isPackaged: app.isPackaged,
+        openExternal: (url) => void openExternalLink(url),
+      }),
+    ),
+  );
   denyPermissions();
   serveRenderer();
   registerIpc();

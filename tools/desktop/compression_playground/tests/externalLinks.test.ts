@@ -1,7 +1,10 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+import {chmodSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {delimiter, join} from 'node:path';
 import {describe, expect, it} from 'vitest';
-import {isAllowedExternalUrl} from '../electron/external-links.cjs';
+import {canOpenExternally, isAllowedExternalUrl} from '../electron/external-links.cjs';
 
 describe('isAllowedExternalUrl', () => {
   it('allows https links to openzl.org', () => {
@@ -30,5 +33,29 @@ describe('isAllowedExternalUrl', () => {
     ]) {
       expect(isAllowedExternalUrl(url)).toBe(false);
     }
+  });
+});
+
+describe('canOpenExternally', () => {
+  it('needs xdg-open on PATH on Linux, which Electron would fail without and not say', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'xdg-open-test-'));
+    try {
+      expect(canOpenExternally({platform: 'linux', env: {PATH: ['/nonexistent', directory].join(delimiter)}})).toBe(
+        false,
+      );
+      writeFileSync(join(directory, 'xdg-open'), '#!/bin/sh\n');
+      chmodSync(join(directory, 'xdg-open'), 0o755);
+      expect(canOpenExternally({platform: 'linux', env: {PATH: ['/nonexistent', directory].join(delimiter)}})).toBe(
+        true,
+      );
+      expect(canOpenExternally({platform: 'linux', env: {}})).toBe(false);
+    } finally {
+      rmSync(directory, {recursive: true, force: true});
+    }
+  });
+
+  it('leaves it to the OS elsewhere', () => {
+    expect(canOpenExternally({platform: 'darwin', env: {}})).toBe(true);
+    expect(canOpenExternally({platform: 'win32', env: {}})).toBe(true);
   });
 });

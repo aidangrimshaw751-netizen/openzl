@@ -8,6 +8,9 @@
 // and inspects the window it creates.
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const {app, BrowserWindow} = require('electron');
 
 const loadViolations = [];
@@ -20,6 +23,7 @@ app.on('web-contents-created', (_event, contents) => {
 });
 
 require('../main.cjs');
+const {HELP_LINKS} = require('../app-menu.cjs');
 
 const TIMEOUT_MS = 30_000;
 
@@ -80,6 +84,14 @@ async function main() {
 
   // Stubbed after startup: main.cjs calls shell.openExternal through the shared module object.
   const {shell} = require('electron');
+  // A stand-in xdg-open, so Linux machines without one still take the normal
+  // path; the case without one is checked below.
+  if (process.platform === 'linux') {
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'xdg-open-'));
+    fs.writeFileSync(path.join(fakeBin, 'xdg-open'), '#!/bin/sh\n');
+    fs.chmodSync(path.join(fakeBin, 'xdg-open'), 0o755);
+    process.env.PATH = `${fakeBin}${path.delimiter}${process.env.PATH}`;
+  }
   const opened = [];
   shell.openExternal = async (url) => {
     opened.push(url);
@@ -94,6 +106,38 @@ async function main() {
   );
   await new Promise((resolve) => setTimeout(resolve, 500));
   assert.deepEqual(opened, ['https://openzl.org/getting-started/quick-start/', 'https://openzl.org/sddl/']);
+
+  // The Help menu's links, clicked as a user would.
+  const {Menu, dialog} = require('electron');
+  const help = Menu.getApplicationMenu().items.find((item) => item.role === 'help');
+  opened.length = 0;
+  for (const item of help.submenu.items) {
+    item.click();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(
+    opened,
+    HELP_LINKS.map(({url}) => url),
+  );
+
+  // Without xdg-open, as on WSL or a minimal install, Electron would report
+  // success and open nothing, so the link is shown in a dialog instead.
+  if (process.platform === 'linux') {
+    const shown = [];
+    dialog.showMessageBox = async (_window, options) => {
+      shown.push(options.detail);
+      return {response: 1};
+    };
+    const {PATH} = process.env;
+    process.env.PATH = '/nonexistent';
+    opened.length = 0;
+    help.submenu.items[0].click();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    process.env.PATH = PATH;
+    assert.deepEqual(opened, []);
+    assert.equal(shown.length, 1);
+    assert.ok(shown[0].startsWith(HELP_LINKS[0].url), shown[0]);
+  }
 
   const input = {path: '/nonexistent/sample.bin'};
   const row = {id: 1, compressor: 'OpenZL', level: 6, profile: 'serial', trainRequested: true, profileArg: ''};
