@@ -8,6 +8,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
+const {assertReadableByZli, windowsAnsiCodePage} = require('./ansi-path.cjs');
 const {z} = require('zod');
 
 const TRAINING_THREADS = Math.min(4, Math.max(1, os.availableParallelism()));
@@ -275,6 +276,49 @@ async function removeScratch(directory) {
 }
 
 /**
+ * A path zli can read `input` at, made once so every row of a run reads the
+ * same file rather than each writing its own: a path is used as it is, and
+ * bytes are written to a file. On Windows, where zli reads paths in the ANSI
+ * code page, throws before writing anything if the input path, or the temp
+ * folder every file of the run lives under, has characters the code page
+ * cannot represent. `dispose` removes whatever it wrote.
+ */
+async function prepareInput(input, {tempRoot = os.tmpdir(), codePage} = {}) {
+  const ansiCodePage = codePage ?? (process.platform === 'win32' ? await windowsAnsiCodePage() : undefined);
+  // Absolute paths never start with '-', so zli cannot parse them as flags.
+  const inputPath = 'path' in input ? path.resolve(input.path) : undefined;
+  if (ansiCodePage !== undefined) {
+    assertReadableByZli(
+      tempRoot,
+      'The temporary folder path',
+      'Set the TEMP environment variable to a folder whose path uses only characters in that code page.',
+      ansiCodePage,
+    );
+    if (inputPath !== undefined) {
+      assertReadableByZli(
+        inputPath,
+        'The input file path',
+        'Rename the file, or move it to a folder whose path uses only characters in that code page.',
+        ansiCodePage,
+      );
+    }
+  }
+  if (inputPath !== undefined) {
+    return {path: inputPath, dispose: () => Promise.resolve()};
+  }
+  const directory = await fs.mkdtemp(path.join(tempRoot, 'openzl-input-'));
+  const dispose = () => removeScratch(directory);
+  const preparedPath = path.join(directory, 'input.bin');
+  try {
+    await fs.writeFile(preparedPath, Buffer.from(input.data.buffer, input.data.byteOffset, input.data.byteLength));
+  } catch (error) {
+    await dispose();
+    throw error;
+  }
+  return {path: preparedPath, dispose};
+}
+
+/**
  * zli train benchmarks candidates at a fixed iteration count and has no
  * --level, so each candidate is re-benchmarked with the requested settings.
  * Aborting `signal` stops the running zli and rejects with `signal.reason`.
@@ -289,19 +333,16 @@ async function runOpenZLBenchmark(
   input,
   compressor,
   iterations,
-  {signal, onChild, onStage, onMeasurement, tempRoot = os.tmpdir()} = {},
+  {signal, onChild, onStage, onMeasurement, tempRoot = os.tmpdir(), codePage} = {},
 ) {
   const context = {signal, onChild};
-  const workDirectory = await fs.mkdtemp(path.join(tempRoot, 'openzl-playground-'));
+  // Before anything is created or spawned. A path the worker already
+  // prepared passes through as it is.
+  const prepared = await prepareInput(input, {tempRoot, codePage});
+  let workDirectory;
   try {
-    let inputPath;
-    if ('path' in input) {
-      // Absolute paths never start with '-', so zli cannot parse them as flags.
-      inputPath = path.resolve(input.path);
-    } else {
-      inputPath = path.join(workDirectory, 'input.bin');
-      await fs.writeFile(inputPath, Buffer.from(input.data.buffer, input.data.byteOffset, input.data.byteLength));
-    }
+    workDirectory = await fs.mkdtemp(path.join(tempRoot, 'openzl-playground-'));
+    const inputPath = prepared.path;
 
     if (!compressor.trainRequested) {
       onStage?.({stage: 'benchmark'});
@@ -342,8 +383,11 @@ async function runOpenZLBenchmark(
     }
     return results;
   } finally {
-    await removeScratch(workDirectory);
+    if (workDirectory !== undefined) {
+      await removeScratch(workDirectory);
+    }
+    await prepared.dispose();
   }
 }
 
-module.exports = {runOpenZLBenchmark};
+module.exports = {prepareInput, runOpenZLBenchmark};

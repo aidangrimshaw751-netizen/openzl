@@ -13,6 +13,50 @@ import {fakeZli, HANGING_ZLI, MALFORMED_ZLI, removeFakeZlis, UNORDERED_CANDIDATE
 afterEach(removeFakeZlis);
 
 describe('runOpenZLBenchmark', () => {
+  describe('on Windows, where zli reads paths in the ANSI code page', () => {
+    it('refuses an input path the code page cannot represent, before zli starts', async () => {
+      await expect(
+        runOpenZLBenchmark(fakeZli('process.exit(99);'), {path: '/data/Rīgā/input.bin'}, UNTRAINED, 4, {
+          codePage: 1252,
+        }),
+      ).rejects.toThrow(
+        'The input file path contains "ī", "ā", which this PC\'s ANSI code page (1252) cannot represent',
+      );
+    });
+
+    it('passes an input path through as it is when the code page cannot be checked', async () => {
+      // 99999 stands in for a code page iconv-lite does not know.
+      const results = await runOpenZLBenchmark(fakeZli(), {path: '/data/Rīgā/input.bin'}, UNTRAINED, 4, {
+        codePage: 99999,
+      });
+
+      expect(results).toHaveLength(1);
+    });
+
+    it('refuses a temp folder it cannot represent, which every file of the run lives under', async () => {
+      await expect(
+        runOpenZLBenchmark(fakeZli('process.exit(99);'), {path: '/data/input.bin'}, UNTRAINED, 4, {
+          codePage: 1252,
+          tempRoot: '/tmp/Ünïcödé-ā',
+        }),
+      ).rejects.toThrow('The temporary folder path contains');
+    });
+
+    it('lets through a path the code page can represent', async () => {
+      const results = await runOpenZLBenchmark(fakeZli(), {path: '/data/Алексей/input.bin'}, UNTRAINED, 4, {
+        codePage: 1251,
+      });
+
+      expect(results).toHaveLength(1);
+    });
+
+    it('does not check paths when it is not told a code page and is not on Windows', async () => {
+      const results = await runOpenZLBenchmark(fakeZli(), {path: '/data/Rīgā/input.bin'}, UNTRAINED, 4);
+
+      expect(results).toHaveLength(1);
+    });
+  });
+
   it('reads a CSV written with CRLF line endings and no path column', async () => {
     // On Windows zli writes CRLF, which would otherwise leave a CR on `iters`.
     process.env.FAKE_ZLI_EOL = '\r\n';

@@ -7,7 +7,7 @@
 const fs = require('node:fs');
 const {performance} = require('node:perf_hooks');
 const zlib = require('node:zlib');
-const {runOpenZLBenchmark} = require('./zli-client.cjs');
+const {prepareInput, runOpenZLBenchmark} = require('./zli-client.cjs');
 
 // The codecs are synchronous, so the worker yields between timed iterations to
 // receive a cancel message. Only the codec calls themselves are timed.
@@ -135,6 +135,24 @@ async function measure({zliPath, request, tempRoot}, compressor, readInput, opti
  * `candidate` is null for every row that does not train.
  */
 async function run(payload, {signal, onChild, onEvent} = {}) {
+  // Once for the whole run, so a file that has to be written or copied for
+  // zli is not written again for every row.
+  const prepared = await prepareInput(payload.request.input, {tempRoot: payload.tempRoot});
+  try {
+    return await runRows(
+      {...payload, request: {...payload.request, input: {path: prepared.path}}},
+      {
+        signal,
+        onChild,
+        onEvent,
+      },
+    );
+  } finally {
+    await prepared.dispose();
+  }
+}
+
+async function runRows(payload, {signal, onChild, onEvent}) {
   const results = [];
   let input;
   const readInput = () => (input ??= readRequestInput(payload.request.input));
