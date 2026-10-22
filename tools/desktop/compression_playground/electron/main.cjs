@@ -36,6 +36,7 @@ const {app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session, shell,
 const {APP_ORIGIN, APP_SCHEME, originOf, resolveBundlePath} = require('./app-protocol.cjs');
 const {validateRequest} = require('./benchmark-request.cjs');
 const {isAllowedExternalUrl} = require('./external-links.cjs');
+const {parseWorkerMessage} = require('./worker-messages.cjs');
 
 const BENCHMARK_CHANNEL = 'openzl:benchmark';
 const CANCEL_GRACE_MS = 5000;
@@ -157,7 +158,14 @@ function startRun(config, port) {
     },
   };
 
-  worker.on('message', (/** @type {WorkerOutput} */ message) => {
+  worker.on('message', (rawMessage) => {
+    let message;
+    try {
+      message = parseWorkerMessage(rawMessage);
+    } catch (error) {
+      disposeRun(run, {type: 'failed', message: messageOf(error)});
+      return;
+    }
     switch (message.type) {
       case 'child':
         if (message.state === 'exited') {
