@@ -14,6 +14,7 @@ yarn install
 yarn dev
 yarn test:native
 yarn test:security   # needs a display (Xvfb on Linux)
+yarn test:packaged   # packs the app first; needs a display
 yarn build
 ```
 
@@ -30,7 +31,7 @@ yarn dev
 
 `yarn dev` compiles `zli`, starts Vite, and opens Electron. `yarn build` creates the platform installer under `release/`. ACE trains against the complete selected file (`zli train --use-all-samples --pareto-frontier`), and each candidate is then benchmarked with the requested level and iteration count. The desktop build accepts 10 to 25 candidates, the minimum `zli train` allows. OpenZL runs in ordinary `zli` processes, so its allocations do not pass through Electron's allocator.
 
-The security boundary is deliberately small: the renderer has no Node access. An isolated preload exposes file-path resolution and one validated benchmark IPC call. Browser permission requests are denied, and only `https://openzl.org` links leave the app, opening in the system browser. An Electron utility process coordinates benchmark work, while OpenZL itself runs in `zli` child processes so a native failure cannot terminate the desktop UI.
+The security boundary is deliberately small: the renderer has no Node access. An isolated preload exposes file-path resolution and one validated benchmark IPC call. Browser permission requests are denied, and only `https://openzl.org` links leave the app, opening in the system browser. The packaged renderer is served from a custom `app://bundle` origin rather than `file://`, and IPC is accepted only from that origin. The packaged binary's Electron fuses disable running as Node (`ELECTRON_RUN_AS_NODE`), `NODE_OPTIONS`, `--inspect`, and extra `file://` privileges, and only load the app from its asar archive. An Electron utility process coordinates benchmark work, while OpenZL itself runs in `zli` child processes so a native failure cannot terminate the desktop UI.
 
 The backend reports in the browser worker's message types: a `result` per measurement, or a `failure` for a row it could not measure, then `finished` or `failed`. Trained candidates are counted from 1, best ratio first, and `candidate` is null for every row that does not train. As in the browser, a row that fails is reported and the run goes on to the next.
 
