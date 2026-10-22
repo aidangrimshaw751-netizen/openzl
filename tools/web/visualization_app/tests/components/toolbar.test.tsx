@@ -3,7 +3,7 @@
 
 import '@testing-library/jest-dom/vitest';
 import {describe, it, expect, vi, afterEach} from 'vitest';
-import {screen, cleanup} from '@testing-library/react';
+import {screen, cleanup, within} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import Toolbar from '../../src/components/Toolbar';
@@ -61,9 +61,14 @@ describe('Toolbar', () => {
 
   it('renders nav links with correct hrefs', () => {
     renderToolbar();
-    // Verify that the nav links are rendered with the correct hrefs
-    expect(screen.getByText('HOME').closest('a')).toHaveAttribute('href', '/#');
-    expect(screen.getByText('API REFERENCE').closest('a')).toHaveAttribute('href', '/api/c/compressor/');
-    expect(screen.getByText('GETTING STARTED').closest('a')).toHaveAttribute('href', '/getting-started/quick-start/');
+    // The narrow-screen menu repeats the links, and jsdom does not load the CSS
+    // that hides it, so look only in the header's row of links.
+    const navigation = within(screen.getByRole('navigation', {name: 'OpenZL'}));
+    expect(navigation.getByText('HOME').closest('a')).toHaveAttribute('href', '/#');
+    expect(navigation.getByText('API REFERENCE').closest('a')).toHaveAttribute('href', '/api/c/compressor/');
+    expect(navigation.getByText('GETTING STARTED').closest('a')).toHaveAttribute(
+      'href',
+      '/getting-started/quick-start/',
+    );
   });
 });

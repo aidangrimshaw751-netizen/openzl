@@ -56,7 +56,10 @@ describe('Compression Playground', () => {
     renderWithPlaygroundTheme(<App />);
     expect(screen.getByRole('main')).toBeTruthy();
     expect(screen.getByRole('heading', {level: 1, name: 'Compression Playground'})).toBeInTheDocument();
-    expect(screen.getByRole('link', {name: 'API REFERENCE'})).toHaveAttribute('href', '/api/c/compressor/');
+    // The narrow-screen menu repeats the links, and jsdom does not load the CSS
+    // that hides it, so look only in the header's row of links.
+    const navigation = screen.getByRole('navigation', {name: 'OpenZL'});
+    expect(within(navigation).getByRole('link', {name: 'API REFERENCE'})).toHaveAttribute('href', '/api/c/compressor/');
     // Vite resolves the asset differently under test (through the alias in
     // vite.config.ts) than in a build (behind `base`), so assert the asset
     // rather than a literal path.
