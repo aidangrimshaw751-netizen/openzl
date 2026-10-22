@@ -1,55 +1,108 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+/* eslint-disable @typescript-eslint/no-require-imports */
+
 'use strict';
 
+const {z} = require('zod');
+// Shared with the page, so the limits checked here are the ones it offers.
+const {webConstants} = require('./web-constants.cjs');
+const {maxLevel, trainedCandidates} = webConstants('compressorLimits.json');
+
+const ITERATIONS = 'Iterations must be an integer from 1 to 1000';
+const NO_COMPRESSORS = 'Choose at least one compressor';
+const CANDIDATES = `OpenZL candidate count must be between ${trainedCandidates.desktopMin} and ${trainedCandidates.max}`;
+const INVALID_ROW = 'Invalid compressor row';
+const NO_INPUT = 'Benchmark input must contain a file path or bytes';
+const INVALID_PATH = 'Invalid input path';
+const INVALID_PROFILE_ARG = 'OpenZL profile argument is invalid';
+
+function levelSchema(compressor, maximum) {
+  const message = `Invalid ${compressor} compression level`;
+  return z.int({error: message}).min(1, message).max(maximum, message);
+}
+
+// Out-of-range values throw RangeError; everything else throws TypeError.
+const RANGE_MESSAGES = new Set([
+  ITERATIONS,
+  NO_COMPRESSORS,
+  CANDIDATES,
+  'Invalid OpenZL compression level',
+  'Invalid zstd compression level',
+  'Invalid gzip compression level',
+]);
+
+// The row's shape is checked first, so a malformed row is not reported as an
+// unknown compressor.
+const compressorSchema = z
+  .object({id: z.int({error: INVALID_ROW})}, {error: INVALID_ROW})
+  .loose()
+  .pipe(
+    z.discriminatedUnion(
+      'compressor',
+      [
+        z
+          .object({
+            id: z.int(),
+            compressor: z.literal('OpenZL'),
+            level: levelSchema('OpenZL', maxLevel.OpenZL),
+            profile: z.string({error: 'OpenZL profile is missing'}).min(1, 'OpenZL profile is missing'),
+            trainRequested: z.boolean({error: 'OpenZL training flag is invalid'}),
+            // Only training reads it.
+            candidates: z
+              .int({error: CANDIDATES})
+              .min(trainedCandidates.desktopMin, CANDIDATES)
+              .max(trainedCandidates.max, CANDIDATES)
+              .optional(),
+            profileArg: z.string({error: INVALID_PROFILE_ARG}).max(4096, INVALID_PROFILE_ARG),
+          })
+          .refine((row) => !row.trainRequested || row.candidates !== undefined, {
+            message: CANDIDATES,
+            path: ['candidates'],
+          }),
+        z.object({id: z.int(), compressor: z.literal('zstd'), level: levelSchema('zstd', maxLevel.zstd)}),
+        z.object({id: z.int(), compressor: z.literal('gzip'), level: levelSchema('gzip', maxLevel.gzip)}),
+      ],
+      {error: 'Unknown compressor'},
+    ),
+  );
+
+const inputSchema = z
+  .object(
+    {
+      path: z
+        .string({error: INVALID_PATH})
+        .min(1, INVALID_PATH)
+        .refine((path) => !path.includes('\0'), INVALID_PATH)
+        .optional(),
+      data: z.instanceof(Uint8Array, {error: NO_INPUT}).optional(),
+    },
+    {error: 'Benchmark input is missing'},
+  )
+  .refine((input) => (input.path === undefined) !== (input.data === undefined), NO_INPUT);
+
+/** Keys are in the order they are reported: the first invalid one names the error. */
+const benchmarkRequestSchema = z.object(
+  {
+    iterations: z.int({error: ITERATIONS}).min(1, ITERATIONS).max(1000, ITERATIONS),
+    compressors: z.array(compressorSchema, {error: NO_COMPRESSORS}).min(1, NO_COMPRESSORS),
+    input: inputSchema,
+  },
+  {error: 'Invalid benchmark request'},
+);
+
+/**
+ * Returns a validated copy of the request with unknown keys removed, so only
+ * known fields reach the worker. Throws a TypeError or RangeError naming the
+ * first invalid field.
+ */
 function validateRequest(request) {
-  if (request === null || typeof request !== 'object') {
-    throw new TypeError('Invalid benchmark request');
+  const parsed = benchmarkRequestSchema.safeParse(request);
+  if (parsed.success) {
+    return parsed.data;
   }
-  if (!Number.isInteger(request.iterations) || request.iterations < 1 || request.iterations > 1000) {
-    throw new RangeError('Iterations must be an integer from 1 to 1000');
-  }
-  if (!Array.isArray(request.compressors) || request.compressors.length === 0) {
-    throw new RangeError('Choose at least one compressor');
-  }
-  for (const row of request.compressors) {
-    if (row === null || typeof row !== 'object' || !Number.isInteger(row.id)) {
-      throw new TypeError('Invalid compressor row');
-    }
-    if (!['OpenZL', 'zstd', 'gzip'].includes(row.compressor)) {
-      throw new TypeError('Unknown compressor');
-    }
-    const maximumLevel = row.compressor === 'zstd' ? 19 : 9;
-    if (!Number.isInteger(row.level) || row.level < 1 || row.level > maximumLevel) {
-      throw new RangeError(`Invalid ${row.compressor} compression level`);
-    }
-    if (row.compressor === 'OpenZL') {
-      if (typeof row.profile !== 'string' || row.profile.length === 0) {
-        throw new TypeError('OpenZL profile is missing');
-      }
-      if (typeof row.trainRequested !== 'boolean') {
-        throw new TypeError('OpenZL training flag is invalid');
-      }
-      if (!Number.isInteger(row.candidates) || row.candidates < 10 || row.candidates > 25) {
-        throw new RangeError('OpenZL candidate count must be between 10 and 25');
-      }
-      if (typeof row.profileArg !== 'string' || row.profileArg.length > 4096) {
-        throw new TypeError('OpenZL profile argument is invalid');
-      }
-    }
-  }
-  const input = request.input;
-  if (input === null || typeof input !== 'object') {
-    throw new TypeError('Benchmark input is missing');
-  }
-  if ('path' in input) {
-    if (typeof input.path !== 'string' || input.path.length === 0 || input.path.includes('\0')) {
-      throw new TypeError('Invalid input path');
-    }
-  } else if (!('data' in input) || !(input.data instanceof Uint8Array)) {
-    throw new TypeError('Benchmark input must contain a file path or bytes');
-  }
-  return request;
+  const {message} = parsed.error.issues[0];
+  throw RANGE_MESSAGES.has(message) ? new RangeError(message) : new TypeError(message);
 }
 
 module.exports = {validateRequest};
