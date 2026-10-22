@@ -191,9 +191,10 @@ describe('MeasurementsTable', () => {
 });
 
 describe('ResultsPanel', () => {
-  it('drops the empty-state card once there are measurements', () => {
+  it('drops the empty state and the guide once there are measurements', () => {
     const {rerender} = renderWithPlaygroundTheme(<ResultsPanel runState={{status: 'idle'}} />);
     expect(screen.getByText('No results yet')).toBeInTheDocument();
+    expect(screen.getByRole('heading', {name: 'How it works'})).toBeInTheDocument();
 
     rerender(
       <ChakraProvider value={playgroundSystem}>
@@ -201,8 +202,33 @@ describe('ResultsPanel', () => {
       </ChakraProvider>,
     );
     expect(screen.queryByText('No results yet')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', {name: 'How it works'})).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', {name: 'Reading the results'})).not.toBeInTheDocument();
+    expect(screen.queryByRole('complementary', {name: 'Desktop app recommendation'})).not.toBeInTheDocument();
     expect(screen.getByRole('table', {name: 'Measurements'})).toBeInTheDocument();
     expect(screen.getByText(/WebAssembly/)).toBeInTheDocument();
+  });
+
+  it('keeps the empty state and the guide until the first measurement arrives', () => {
+    const {rerender} = renderWithPlaygroundTheme(<ResultsPanel runState={{status: 'loading'}} />);
+    expect(screen.getByText('No results yet')).toBeInTheDocument();
+    expect(screen.getByRole('heading', {name: 'How it works'})).toBeInTheDocument();
+
+    const running = {status: 'running', completedJobs: 0, totalJobs: 2, failures: [], step: null} as const;
+    rerender(
+      <ChakraProvider value={playgroundSystem}>
+        <ResultsPanel runState={{...running, results: []}} />
+      </ChakraProvider>,
+    );
+    expect(screen.getByText('No results yet')).toBeInTheDocument();
+
+    rerender(
+      <ChakraProvider value={playgroundSystem}>
+        <ResultsPanel runState={{...running, completedJobs: 1, results: [TWO_ZSTD_LEVELS[0]]}} />
+      </ChakraProvider>,
+    );
+    expect(screen.queryByText('No results yet')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', {name: 'How it works'})).not.toBeInTheDocument();
   });
 
   it('keeps the empty state when every job failed, and says which', () => {
@@ -222,27 +248,27 @@ describe('ResultsPanel', () => {
     expect(screen.queryByText(/WebAssembly/)).not.toBeInTheDocument();
   });
 
-  it('still says the count in the live region once the run is over', () => {
-    // The pill says it on screen, but a region that empties announces nothing,
-    // so a screen reader would hear no end to `Running 1 of 2…`.
-    renderWithPlaygroundTheme(<ResultsPanel runState={completed(TWO_ZSTD_LEVELS)} />);
-
-    expect(screen.getByRole('status')).toHaveTextContent('2 measured');
-  });
-
-  it('shows the finished line on screen when there is no pill to say it', () => {
-    // The pill only appears with results, so a run that measured nothing would
-    // otherwise end with nothing on the page saying it ended.
-    const {rerender} = renderWithPlaygroundTheme(<ResultsPanel runState={completed(TWO_ZSTD_LEVELS)} />);
-    // `srOnly` hides by taking the element out of flow; with the pill, it is.
-    expect(getComputedStyle(screen.getByRole('status')).position).toBe('absolute');
+  it('leaves progress and the done line to the run card', () => {
+    const {rerender} = renderWithPlaygroundTheme(
+      <ResultsPanel
+        runState={{status: 'running', completedJobs: 1, totalJobs: 2, results: [], failures: [], step: null}}
+      />,
+    );
+    expect(screen.queryByText(/Running/)).not.toBeInTheDocument();
 
     rerender(
       <ChakraProvider value={playgroundSystem}>
         <ResultsPanel runState={completed([])} />
       </ChakraProvider>,
     );
-    expect(screen.getByRole('status')).toHaveTextContent('0 measured');
-    expect(getComputedStyle(screen.getByRole('status')).position).not.toBe('absolute');
+    expect(screen.queryByText(/measured/)).not.toBeInTheDocument();
+  });
+
+  it('says on screen that a run failed', () => {
+    renderWithPlaygroundTheme(
+      <ResultsPanel runState={{status: 'error', message: 'worker crashed', results: [], failures: []}} />,
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Run failed: worker crashed');
   });
 });
