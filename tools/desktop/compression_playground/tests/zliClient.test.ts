@@ -2,12 +2,12 @@
 
 // @vitest-environment node
 
-import {chmodSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync} from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {runOpenZLBenchmark} from '../electron/zli-client.cjs';
+import {runOpenZLBenchmark, type ZliChildEvent} from '../electron/zli-client.cjs';
 
 /**
  * Stands in for zli. Training writes candidates 0, 1, 2 and 10 beside a
@@ -46,6 +46,19 @@ if (args[0] === 'train') {
 }
 `;
 
+/**
+ * Stands in for a zli that ignores SIGTERM and never finishes. It writes a
+ * `ready` file beside itself once SIGTERM is ignored, so a test can wait for
+ * that before signalling it.
+ */
+const HANGING_ZLI = `
+process.on('SIGTERM', () => {});
+require('node:fs').writeFileSync(require('node:path').join(__dirname, 'ready'), '');
+setInterval(() => {}, 1000);
+`;
+
+const UNTRAINED = {profile: 'serial', profileArg: '', level: 6, trainRequested: false, candidates: 10};
+
 let workDirectory: string | undefined;
 
 afterEach(() => {
@@ -54,10 +67,10 @@ afterEach(() => {
   }
 });
 
-function fakeZli(): string {
+function fakeZli(script = FAKE_ZLI): string {
   workDirectory = mkdtempSync(join(tmpdir(), 'zli-client-test-'));
   const zliPath = join(workDirectory, 'zli');
-  writeFileSync(zliPath, `#!${process.execPath}\n${FAKE_ZLI}`);
+  writeFileSync(zliPath, `#!${process.execPath}\n${script}`);
   chmodSync(zliPath, 0o755);
   return zliPath;
 }
@@ -120,5 +133,48 @@ describe('runOpenZLBenchmark', () => {
         decompressMs: 1,
       })),
     );
+  });
+
+  it('kills a zli that ignores SIGTERM when the run is aborted, and cleans up', async () => {
+    const zliPath = fakeZli(HANGING_ZLI);
+    const runDirectories = () => readdirSync(tmpdir()).filter((entry) => entry.startsWith('openzl-playground-'));
+    const before = runDirectories();
+    const controller = new AbortController();
+    const events: ZliChildEvent[] = [];
+    const run = runOpenZLBenchmark(zliPath, {data: new Uint8Array([1, 2, 3])}, UNTRAINED, 1, {
+      signal: controller.signal,
+      onChild: (event) => events.push(event),
+    });
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    // Aborting before the stand-in ignores SIGTERM would kill it at once.
+    await vi.waitFor(() => expect(existsSync(join(dirname(zliPath), 'ready'))).toBe(true));
+    const [{pid}] = events;
+
+    const abortedAt = Date.now();
+    controller.abort(new Error('Benchmark cancelled'));
+    await expect(run).rejects.toThrow('Benchmark cancelled');
+
+    // SIGTERM was ignored, so only the SIGKILL after the grace period ended it.
+    expect(Date.now() - abortedAt).toBeGreaterThanOrEqual(1900);
+    expect(() => process.kill(pid, 0)).toThrow();
+    expect(events).toEqual([
+      {pid, state: 'spawned'},
+      {pid, state: 'exited'},
+    ]);
+    expect(runDirectories()).toEqual(before);
+  }, 10_000);
+
+  it('does not start zli once the run is aborted', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('Benchmark cancelled'));
+    const onChild = vi.fn();
+
+    await expect(
+      runOpenZLBenchmark(fakeZli(HANGING_ZLI), {data: new Uint8Array([1])}, UNTRAINED, 1, {
+        signal: controller.signal,
+        onChild,
+      }),
+    ).rejects.toThrow('Benchmark cancelled');
+    expect(onChild).not.toHaveBeenCalled();
   });
 });
