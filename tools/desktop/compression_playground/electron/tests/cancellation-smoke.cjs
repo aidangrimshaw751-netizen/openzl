@@ -79,8 +79,9 @@ async function harness(scenario, sample) {
     ],
   };
   await window.webContents.executeJavaScript(`
-    window.testRun = window.openzlDesktop.startBenchmark(${JSON.stringify(request)});
-    window.testOutcome = window.testRun.messages.then(() => 'resolved', (error) => error.message);
+    window.testEvents = [];
+    window.testRun = window.openzlDesktop.startBenchmark(${JSON.stringify(request)}, (event) => window.testEvents.push(event));
+    window.testOutcome = window.testRun.done.then(() => 'resolved', (error) => error.message);
     undefined;
   `);
   assert.ok(await waitUntil(() => zliTrainPids().length > 0, 30_000), 'zli train never started');
@@ -89,6 +90,15 @@ async function harness(scenario, sample) {
 
   const endedAt = Date.now();
   if (scenario === 'cancel') {
+    // Still training: no candidate has started, so at most training's steps
+    // have been reported.
+    result.eventsBeforeCancel = await window.webContents.executeJavaScript(
+      'window.testEvents.map((event) => event.type)',
+    );
+    assert.ok(
+      result.eventsBeforeCancel.every((type) => type === 'step'),
+      `reported ${result.eventsBeforeCancel} before any candidate`,
+    );
     result.outcome = await window.webContents.executeJavaScript('window.testRun.cancel(); window.testOutcome');
     assert.equal(result.outcome, 'Benchmark cancelled');
   } else if (scenario === 'reload') {

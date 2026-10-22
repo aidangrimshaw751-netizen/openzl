@@ -92,56 +92,74 @@ function finishOpenZLResult(result) {
   };
 }
 
+// A trained row's step covers training and then benchmarking its candidates,
+// in one fraction that only grows. Training takes most of the time, so it gets
+// most of the row.
+const TRAINING_SHARE = 0.8;
+
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function measure({zliPath, request, tempRoot}, compressor, readInput, options) {
+/**
+ * Measures one row, passing each measurement to `report` as soon as it is
+ * made: a trained row's candidates one by one, not when the last is done.
+ */
+async function measure({zliPath, request, tempRoot}, compressor, readInput, options, report) {
   if (compressor.compressor === 'OpenZL') {
-    const measurements = await runOpenZLBenchmark(zliPath, request.input, compressor, request.iterations, {
+    await runOpenZLBenchmark(zliPath, request.input, compressor, request.iterations, {
       ...options,
       tempRoot,
+      onMeasurement: (measurement, index, total) =>
+        report({
+          ...finishOpenZLResult(measurement),
+          rowId: compressor.id,
+          candidate: compressor.trainRequested ? {index: index + 1, total} : null,
+        }),
     });
-    return measurements.map((measurement, index) => ({
-      ...finishOpenZLResult(measurement),
-      rowId: compressor.id,
-      candidate: compressor.trainRequested ? {index: index + 1, total: measurements.length} : null,
-    }));
+    return;
   }
   const measurement =
     compressor.compressor === 'zstd'
       ? await benchmarkZstd(readInput(), compressor.level, request.iterations, options.signal)
       : await benchmarkGzip(readInput(), compressor.level, request.iterations, options.signal);
-  return [{...measurement, rowId: compressor.id, candidate: null}];
+  report({...measurement, rowId: compressor.id, candidate: null});
 }
 
 /**
- * Runs every row in order, reporting as the browser's worker does: a `result`
- * per measurement, or a `failure` for a row that could not be measured. A
- * failed row does not stop the run; only cancelling does. Trained candidates
- * are counted from 1, best ratio first; `candidate` is null for every row that
- * does not train.
+ * Runs every row in order, reporting as the browser's worker does: `step` as
+ * training progresses and as each trained candidate starts, then a
+ * `result` per measurement as soon as it is made, or a `failure` for a row
+ * that could not be measured. A failed row does not stop the run; only
+ * cancelling does. Trained candidates are counted from 1, best ratio first;
+ * `candidate` is null for every row that does not train.
  */
 async function run(payload, {signal, onChild, onEvent} = {}) {
   const results = [];
   let input;
   const readInput = () => (input ??= readRequestInput(payload.request.input));
+  const onStage = (stage) => {
+    if (stage.stage === 'train' && stage.fraction !== undefined) {
+      onEvent?.({type: 'step', fraction: stage.fraction * TRAINING_SHARE});
+    } else if (stage.stage === 'candidates') {
+      const benchmarked = (stage.candidate - 1) / stage.candidateCount;
+      onEvent?.({type: 'step', fraction: TRAINING_SHARE + benchmarked * (1 - TRAINING_SHARE)});
+    }
+  };
+  const report = (result) => {
+    results.push(result);
+    onEvent?.({type: 'result', result});
+  };
 
   for (const compressor of payload.request.compressors) {
     signal?.throwIfAborted();
-    let measured;
     try {
-      measured = await measure(payload, compressor, readInput, {signal, onChild});
+      await measure(payload, compressor, readInput, {signal, onChild, onStage}, report);
     } catch (error) {
       if (signal?.aborted) {
         throw error;
       }
       onEvent?.({type: 'failure', failure: {rowId: compressor.id, candidate: null, message: messageOf(error)}});
-      continue;
-    }
-    for (const result of measured) {
-      results.push(result);
-      onEvent?.({type: 'result', result});
     }
   }
   return results;

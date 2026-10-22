@@ -186,24 +186,25 @@ async function main() {
             }
             await new Promise((resolve) => setTimeout(resolve, 50));
           }
-          const messages = await window.openzlDesktop.startBenchmark({
+          const events = [];
+          await window.openzlDesktop.startBenchmark({
             input: {path: ${JSON.stringify(sample)}},
             iterations: 1,
             compressors: [
               {id: 1, compressor: 'OpenZL', level: 1, profile: 'serial', trainRequested: false, candidates: 10, profileArg: ''},
               {id: 2, compressor: 'zstd', level: 3},
             ],
-          }).messages;
+          }, (event) => events.push(event)).done;
           return {
             origin: location.origin,
-            events: messages.map((message) => message.type + ' ' + message.result?.rowId),
-            srcSizes: messages.map((message) => message.result?.srcSize),
-            candidates: messages.map((message) => message.result?.candidate),
+            events: events.map((event) => event.type + ' ' + event.result?.rowId),
+            srcSizes: events.map((event) => event.result?.srcSize),
+            candidates: events.map((event) => event.result?.candidate),
           };
         })()`,
       );
       const size = fs.statSync(sample).size;
-      // Neither row trains: one result per row, in order.
+      // Neither row trains, so there are no steps: one result per row, in order.
       assert.deepEqual(page, {
         origin: 'app://bundle',
         events: ['result 1', 'result 2'],

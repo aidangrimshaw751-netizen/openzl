@@ -129,7 +129,7 @@ function startRun(request, port) {
       } else {
         run.childPids.add(message.pid);
       }
-    } else if (message.type === 'result' || message.type === 'failure') {
+    } else if (message.type === 'step' || message.type === 'result' || message.type === 'failure') {
       if (!run.finished) {
         port.postMessage(message);
       }
