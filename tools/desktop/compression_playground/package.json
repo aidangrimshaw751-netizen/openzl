@@ -12,7 +12,7 @@
   "scripts": {
     "dev": "yarn build:native && concurrently -k -s first \"yarn --cwd ../../web/compression_playground vite --base ./\" \"wait-on tcp:5173 && electron electron/main.cjs --dev-server=http://localhost:5173\"",
     "build:renderer": "yarn --cwd ../../web/compression_playground tsc -b && yarn --cwd ../../web/compression_playground vite build --base ./ --outDir ../../desktop/compression_playground/dist --emptyOutDir",
-    "build:native": "cmake -S electron/native -B electron/native/build -DCMAKE_BUILD_TYPE=Release && cmake --build electron/native/build --config Release --target zli",
+    "build:native": "cmake -S electron/native -B electron/native/build -DCMAKE_BUILD_TYPE=Release && cmake --build electron/native/build --config Release --target zli zstd-benchmark",
     "test:native": "yarn build:native && node electron/tests/native-training-smoke.cjs",
     "test:security": "yarn build:renderer && electron electron/tests/window-security-smoke.cjs",
     "test:packaged": "yarn package && node electron/tests/packaged-app-smoke.cjs",
@@ -66,7 +66,8 @@
         "from": "electron/native/build/Release",
         "to": "native",
         "filter": [
-          "zli{,.exe}"
+          "zli{,.exe}",
+          "zstd-benchmark{,.exe}"
         ]
       },
       {

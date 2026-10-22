@@ -8,7 +8,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
-const {assertReadableByZli, windowsAnsiCodePage} = require('./ansi-path.cjs');
+const {assertReadableByNativeTools, windowsAnsiCodePage} = require('./ansi-path.cjs');
 const {z} = require('zod');
 
 const TRAINING_THREADS = Math.min(4, Math.max(1, os.availableParallelism()));
@@ -26,17 +26,21 @@ const benchmarkRowSchema = z.object({
   iters: csvCount.pipe(z.int().min(1)),
 });
 
-function parseOutput(schema, payload) {
+function parseOutput(schema, payload, binary) {
   const parsed = schema.safeParse(payload);
   if (parsed.success) {
     return parsed.data;
   }
   const [issue] = parsed.error.issues;
   const field = issue.path.length > 0 ? `${issue.path.join('.')}: ` : '';
-  throw new Error(`zli returned an unexpected result (${field}${issue.message})`);
+  throw new Error(`${binary} returned an unexpected result (${field}${issue.message})`);
 }
 
-// SIGTERM first, then SIGKILL if zli has not exited. Windows terminates on either.
+function executableName(executable) {
+  return path.basename(executable).replace(/\.exe$/i, '');
+}
+
+// SIGTERM first, then SIGKILL if the child has not exited. Windows terminates on either.
 function terminate(child) {
   child.kill('SIGTERM');
   const escalate = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS);
@@ -86,25 +90,23 @@ function failureFromVerboseStderr(stderr, killed) {
 }
 
 /**
- * Runs zli, which reports failures on stderr. With `onProgress`, zli runs at
- * --verbose 3: each progress line is reported as a fraction, and only the
- * fatal error is kept as the failure message.
+ * Runs a native benchmark binary, which reports failures on stderr. With
+ * `onProgress`, stderr is zli's at --verbose 3: each progress line is reported
+ * as a fraction, and only the fatal error is kept as the failure message.
  */
-function runZli(zliPath, args, {signal, onChild, onProgress}) {
+function runNative(executable, args, {signal, onChild, onProgress}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason);
       return;
     }
-    // --verbose 1 limits stderr to errors, so a failure message can be shown
-    // as-is; 3 adds the progress lines `onProgress` reads.
-    const child = spawn(zliPath, [...args, '--verbose', onProgress === undefined ? '1' : '3'], {
+    const child = spawn(executable, args, {
       stdio: ['ignore', 'ignore', 'pipe'],
       windowsHide: true,
     });
     child.stderr.setEncoding('utf8');
     let stderr = '';
-    // Why zli was stopped; reported once it has actually exited.
+    // Why the child was stopped; reported once it has actually exited.
     let stopReason;
     let settled = false;
     const fail = (error) => {
@@ -173,7 +175,7 @@ function runZli(zliPath, args, {signal, onChild, onProgress}) {
           new Error(
             detail !== ''
               ? detail
-              : `zli exited unexpectedly (${exitSignal === null ? `code ${code}` : `signal ${exitSignal}`})`,
+              : `${executableName(executable)} exited unexpectedly (${exitSignal === null ? `code ${code}` : `signal ${exitSignal}`})`,
           ),
         );
         return;
@@ -182,6 +184,12 @@ function runZli(zliPath, args, {signal, onChild, onProgress}) {
       resolve();
     });
   });
+}
+
+function runZli(zliPath, args, context) {
+  // --verbose 1 limits stderr to errors, so a failure message can be shown
+  // as-is; 3 adds the progress lines `onProgress` reads.
+  return runNative(zliPath, [...args, '--verbose', context.onProgress === undefined ? '1' : '3'], context);
 }
 
 function profileArguments(compressor) {
@@ -193,18 +201,21 @@ function profileArguments(compressor) {
   return args;
 }
 
-/** Reads the single row zli benchmark --output-csv writes for one input file. */
-async function readBenchmarkCsv(csvPath) {
+/**
+ * Reads the single row zli benchmark --output-csv writes for one input file.
+ * zstd-benchmark writes the same columns.
+ */
+async function readBenchmarkCsv(csvPath, binary) {
   const [header, row = ''] = (await fs.readFile(csvPath, 'utf8')).split(/\r?\n/);
   const values = row.split(',');
   const names = header.split(',').map((name) => name.trim());
   // Read by name, so a repeated column would silently replace the first.
   const repeated = names.find((name, index) => names.indexOf(name) !== index);
   if (repeated !== undefined) {
-    throw new Error(`zli returned an unexpected result (column ${repeated} appears twice)`);
+    throw new Error(`${binary} returned an unexpected result (column ${repeated} appears twice)`);
   }
   const fields = Object.fromEntries(names.map((name, index) => [name, values[index]]));
-  const field = parseOutput(benchmarkRowSchema, fields);
+  const field = parseOutput(benchmarkRowSchema, fields, binary);
   return {
     iterations: field.iters,
     srcSize: field.srcSize,
@@ -214,23 +225,17 @@ async function readBenchmarkCsv(csvPath) {
   };
 }
 
+function benchmarkArguments(level, iterations, csvPath) {
+  return ['--level', String(level), '--num-iters', String(iterations), '--output-csv', csvPath];
+}
+
 async function benchmark(zliPath, inputPath, compressorArgs, level, iterations, csvPath, context) {
   await runZli(
     zliPath,
-    [
-      'benchmark',
-      inputPath,
-      ...compressorArgs,
-      '--level',
-      String(level),
-      '--num-iters',
-      String(iterations),
-      '--output-csv',
-      csvPath,
-    ],
+    ['benchmark', inputPath, ...compressorArgs, ...benchmarkArguments(level, iterations, csvPath)],
     context,
   );
-  return readBenchmarkCsv(csvPath);
+  return readBenchmarkCsv(csvPath, 'zli');
 }
 
 async function trainedCandidatePaths(zliPath, inputPath, compressor, outputDirectory, context) {
@@ -276,26 +281,26 @@ async function removeScratch(directory) {
 }
 
 /**
- * A path zli can read `input` at, made once so every row of a run reads the
+ * A path the native binaries can read `input` at, made once so every row of a run reads the
  * same file rather than each writing its own: a path is used as it is, and
- * bytes are written to a file. On Windows, where zli reads paths in the ANSI
+ * bytes are written to a file. On Windows, where they read paths in the ANSI
  * code page, throws before writing anything if the input path, or the temp
  * folder every file of the run lives under, has characters the code page
  * cannot represent. `dispose` removes whatever it wrote.
  */
 async function prepareInput(input, {tempRoot = os.tmpdir(), codePage} = {}) {
   const ansiCodePage = codePage ?? (process.platform === 'win32' ? await windowsAnsiCodePage() : undefined);
-  // Absolute paths never start with '-', so zli cannot parse them as flags.
+  // Absolute paths never start with '-', so they cannot be parsed as flags.
   const inputPath = 'path' in input ? path.resolve(input.path) : undefined;
   if (ansiCodePage !== undefined) {
-    assertReadableByZli(
+    assertReadableByNativeTools(
       tempRoot,
       'The temporary folder path',
       'Set the TEMP environment variable to a folder whose path uses only characters in that code page.',
       ansiCodePage,
     );
     if (inputPath !== undefined) {
-      assertReadableByZli(
+      assertReadableByNativeTools(
         inputPath,
         'The input file path',
         'Rename the file, or move it to a folder whose path uses only characters in that code page.',
@@ -390,4 +395,37 @@ async function runOpenZLBenchmark(
   }
 }
 
-module.exports = {prepareInput, runOpenZLBenchmark};
+/**
+ * Measures zstd with the zstd-benchmark binary built beside zli, so zstd rows
+ * are timed the same way as OpenZL rows. Takes the same options as
+ * runOpenZLBenchmark.
+ */
+async function runZstdBenchmark(
+  zstdBenchmarkPath,
+  input,
+  level,
+  iterations,
+  {signal, onChild, onStage, onMeasurement, tempRoot = os.tmpdir(), codePage} = {},
+) {
+  const prepared = await prepareInput(input, {tempRoot, codePage});
+  let workDirectory;
+  try {
+    workDirectory = await fs.mkdtemp(path.join(tempRoot, 'openzl-playground-'));
+    onStage?.({stage: 'benchmark'});
+    const csvPath = path.join(workDirectory, 'zstd.csv');
+    await runNative(zstdBenchmarkPath, [prepared.path, ...benchmarkArguments(level, iterations, csvPath)], {
+      signal,
+      onChild,
+    });
+    const result = await readBenchmarkCsv(csvPath, 'zstd-benchmark');
+    onMeasurement?.(result, 0, 1);
+    return result;
+  } finally {
+    if (workDirectory !== undefined) {
+      await removeScratch(workDirectory);
+    }
+    await prepared.dispose();
+  }
+}
+
+module.exports = {prepareInput, runOpenZLBenchmark, runZstdBenchmark};

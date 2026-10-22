@@ -28,8 +28,8 @@ protocol.registerSchemesAsPrivileged([
   {scheme: APP_SCHEME, privileges: {standard: true, secure: true, supportFetchAPI: true}},
 ]);
 
-function zliPath() {
-  const executable = process.platform === 'win32' ? 'zli.exe' : 'zli';
+function nativeBinaryPath(name) {
+  const executable = process.platform === 'win32' ? `${name}.exe` : name;
   return app.isPackaged
     ? path.join(process.resourcesPath, 'native', executable)
     : path.join(__dirname, 'native', 'build', 'Release', executable);
@@ -80,7 +80,7 @@ function serveRenderer() {
 
 /**
  * One benchmark run in its own utility process, reporting to the renderer over
- * `port`. The main process records every zli PID the worker reports, so it can
+ * `port`. The main process records every native PID the worker reports, so it can
  * kill them if the worker dies or ignores a cancel: children do not exit with
  * their parent on their own. It also owns the run's scratch directory, which a
  * killed worker could not clean up.
@@ -160,7 +160,13 @@ function startRun(request, port) {
   );
   worker.once('spawn', () => {
     try {
-      worker.postMessage({type: 'start', zliPath: zliPath(), request, tempRoot: run.tempRoot});
+      worker.postMessage({
+        type: 'start',
+        zliPath: nativeBinaryPath('zli'),
+        zstdBenchmarkPath: nativeBinaryPath('zstd-benchmark'),
+        request,
+        tempRoot: run.tempRoot,
+      });
     } catch (error) {
       // The worker died between spawning and receiving its start message.
       disposeRun(run, {type: 'failed', message: `Could not start the benchmark process: ${error.message}`});

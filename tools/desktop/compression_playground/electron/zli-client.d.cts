@@ -54,3 +54,11 @@ export function prepareInput(
   input: {path: string} | {data: Uint8Array},
   options?: {tempRoot?: string; codePage?: number},
 ): Promise<{path: string; dispose(): Promise<void>}>;
+
+export function runZstdBenchmark(
+  zstdBenchmarkPath: string,
+  input: {path: string} | {data: Uint8Array},
+  level: number,
+  iterations: number,
+  options?: RunOptions,
+): Promise<ZliBenchmarkResult>;

@@ -31,10 +31,13 @@ async function runAll(payload) {
 }
 
 async function main() {
-  const executable = process.platform === 'win32' ? 'zli.exe' : 'zli';
-  const zliPath = path.resolve(__dirname, '..', 'native', 'build', 'Release', executable);
+  const binary = (name) =>
+    path.resolve(__dirname, '..', 'native', 'build', 'Release', process.platform === 'win32' ? `${name}.exe` : name);
+  const zliPath = binary('zli');
+  const zstdBenchmarkPath = binary('zstd-benchmark');
   const results = await runAll({
     zliPath,
+    zstdBenchmarkPath,
     request: {
       input: {data: sampleData()},
       iterations: 1,
@@ -69,6 +72,7 @@ async function main() {
     fs.writeFileSync(inputPath, sampleData());
     const pathResults = await runAll({
       zliPath,
+      zstdBenchmarkPath,
       request: {
         input: {path: inputPath},
         iterations: 1,
@@ -82,10 +86,11 @@ async function main() {
             candidates: 10,
             profileArg: '',
           },
+          {id: 2, compressor: 'zstd', level: 3},
         ],
       },
     });
-    if (pathResults.length !== 1 || pathResults[0]?.srcSize !== SAMPLE_SIZE) {
+    if (pathResults.length !== 2 || pathResults.some((result) => result.srcSize !== SAMPLE_SIZE)) {
       throw new Error('Native file-path benchmark returned an invalid result');
     }
 
@@ -93,6 +98,7 @@ async function main() {
     try {
       await runAll({
         zliPath,
+        zstdBenchmarkPath,
         request: {
           input: {path: inputPath},
           iterations: 1,

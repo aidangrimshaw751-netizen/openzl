@@ -7,8 +7,16 @@ import fsPromises from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {runOpenZLBenchmark, type ZliChildEvent, type ZliStage} from '../electron/zli-client.cjs';
-import {fakeZli, HANGING_ZLI, MALFORMED_ZLI, removeFakeZlis, UNORDERED_CANDIDATES_ZLI, UNTRAINED} from './fakeZli.ts';
+import {runOpenZLBenchmark, runZstdBenchmark, type ZliChildEvent, type ZliStage} from '../electron/zli-client.cjs';
+import {
+  FAKE_ZSTD_BENCHMARK,
+  fakeZli,
+  HANGING_ZLI,
+  MALFORMED_ZLI,
+  removeFakeZlis,
+  UNORDERED_CANDIDATES_ZLI,
+  UNTRAINED,
+} from './fakeZli.ts';
 
 afterEach(removeFakeZlis);
 
@@ -292,5 +300,48 @@ require('node:fs').writeFileSync(
       }),
     ).rejects.toThrow('Benchmark cancelled');
     expect(onChild).not.toHaveBeenCalled();
+  });
+});
+
+describe('runZstdBenchmark', () => {
+  const runDirectories = () => readdirSync(tmpdir()).filter((entry) => entry.startsWith('openzl-playground-'));
+
+  it('benchmarks bytes from a scratch file at the requested level, and cleans up', async () => {
+    const before = runDirectories();
+    const stages: ZliStage[] = [];
+
+    const result = await runZstdBenchmark(
+      fakeZli(FAKE_ZSTD_BENCHMARK, 'zstd-benchmark'),
+      {data: new Uint8Array(5)},
+      7,
+      4,
+      {onStage: (stage) => stages.push(stage)},
+    );
+
+    expect(result).toEqual({iterations: 4, srcSize: 5, compressedSize: 7, compressMs: 2, decompressMs: 1});
+    expect(stages).toEqual([{stage: 'benchmark'}]);
+    expect(runDirectories()).toEqual(before);
+  });
+
+  it('reports what zstd-benchmark wrote to stderr when it fails', async () => {
+    const failing = fakeZli("process.stderr.write('Cannot open input file: x\\n'); process.exit(1);", 'zstd-benchmark');
+
+    await expect(runZstdBenchmark(failing, {data: new Uint8Array(1)}, 3, 1)).rejects.toThrow(
+      'Cannot open input file: x',
+    );
+  });
+
+  it('names zstd-benchmark when its CSV breaks the format', async () => {
+    await expect(
+      runZstdBenchmark(fakeZli(MALFORMED_ZLI, 'zstd-benchmark'), {data: new Uint8Array(1)}, 3, 1),
+    ).rejects.toThrow('zstd-benchmark returned an unexpected result (srcSize:');
+  });
+
+  it('refuses an input path the Windows code page cannot represent, before zstd-benchmark starts', async () => {
+    await expect(
+      runZstdBenchmark(fakeZli('process.exit(99);', 'zstd-benchmark'), {path: '/data/Rīgā/input.bin'}, 3, 1, {
+        codePage: 1252,
+      }),
+    ).rejects.toThrow('The input file path contains "ī", "ā"');
   });
 });

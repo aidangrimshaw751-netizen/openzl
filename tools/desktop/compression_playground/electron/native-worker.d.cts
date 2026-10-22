@@ -59,6 +59,6 @@ export type BenchmarkEvent =
   | {type: 'failure'; failure: BenchmarkFailure};
 
 export function run(
-  payload: {zliPath: string; request: BenchmarkRequest; tempRoot?: string},
+  payload: {zliPath: string; zstdBenchmarkPath: string; request: BenchmarkRequest; tempRoot?: string},
   options?: {signal?: AbortSignal; onChild?: (event: ZliChildEvent) => void; onEvent?: (event: BenchmarkEvent) => void},
 ): Promise<BenchmarkResult[]>;
