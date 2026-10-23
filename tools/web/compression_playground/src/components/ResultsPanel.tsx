@@ -1,9 +1,10 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+import {useState} from 'react';
 import {Box, Heading, Text, VStack} from '@chakra-ui/react';
 import {LuArrowRight, LuChartLine, LuChartSpline, LuMicroscope, LuMonitor} from 'react-icons/lu';
-import {isRunInProgress, type BenchmarkJob, type Candidate, type RunState} from '../benchmarkTypes.ts';
-import {formatBytes, resultsOf} from '../measurements.ts';
+import {isRunInProgress, type BenchmarkJob, type Candidate, type JobResult, type RunState} from '../benchmarkTypes.ts';
+import {formatBytes, measurementKey, resultsOf} from '../measurements.ts';
 import MeasurementsTable from './MeasurementsTable.tsx';
 import RatioSpeedCharts from './RatioSpeedCharts.tsx';
 
@@ -52,12 +53,7 @@ function FailureList({runState}: ResultsPanelProps) {
   return (
     <VStack as="ul" gap="6px" align="stretch" m={0} p={0} listStyleType="none">
       {outcome.failures.map((failure) => (
-        <Text
-          as="li"
-          key={`${failure.job.id}-${String(failure.candidate?.index ?? 0)}`}
-          color="pg.danger"
-          fontSize="13px"
-          m={0}>
+        <Text as="li" key={measurementKey(failure)} color="pg.danger" fontSize="13px" m={0}>
           {describeMeasurement(failure.job, failure.candidate)}: {failure.message}
         </Text>
       ))}
@@ -68,6 +64,15 @@ function FailureList({runState}: ResultsPanelProps) {
 export default function ResultsPanel({runState}: ResultsPanelProps) {
   const results = resultsOf(runState);
   const hasResults = results.length > 0;
+  const isRunning = isRunInProgress(runState);
+  // The `measurementKey` of the table row under the pointer, picked out on the
+  // charts. While a run goes, rows arrive and re-sort under a pointer that has
+  // not moved, so no enter or leave fires, and the charts animate each new
+  // point in; a highlight would stay on a row that is no longer there. So none
+  // is taken until the run ends, and one only holds for the results it was
+  // made on, which keeps a key from the last run off the same job in this one.
+  const [hovered, setHovered] = useState<{key: string; results: readonly JobResult[]} | null>(null);
+  const highlighted = !isRunning && hovered?.results === results ? hovered.key : null;
   return (
     <Box
       as="section"
@@ -102,8 +107,11 @@ export default function ResultsPanel({runState}: ResultsPanelProps) {
             Run failed: {runState.message}
           </Text>
         )}
-        {hasResults && <RatioSpeedCharts results={results} />}
-        <MeasurementsTable runState={runState} />
+        {hasResults && <RatioSpeedCharts results={results} highlighted={highlighted} />}
+        <MeasurementsTable
+          runState={runState}
+          onHighlight={isRunning ? undefined : (key) => setHovered(key === null ? null : {key, results})}
+        />
         <FailureList runState={runState} />
 
         {hasResults && (
