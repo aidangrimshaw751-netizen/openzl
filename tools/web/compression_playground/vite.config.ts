@@ -5,9 +5,22 @@ import {existsSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import type {Plugin} from 'vite';
 
-// index.html carries the production CSP. The dev server additionally needs the
-// inline React Refresh preamble from @vitejs/plugin-react and the HMR websocket.
-const DEV_CSP_SOURCES: [directive: string, source: string][] = [
+type CspSources = [directive: string, source: string][];
+
+// index.html carries the production CSP; the plugins below widen it.
+function addCspSources(html: string, sources: CspSources): string {
+  for (const [directive, source] of sources) {
+    if (!html.includes(directive)) {
+      throw new Error(`index.html Content-Security-Policy is missing "${directive}"`);
+    }
+    html = html.replace(directive, `${directive} ${source}`);
+  }
+  return html;
+}
+
+// The dev server additionally needs the inline React Refresh preamble from
+// @vitejs/plugin-react and the HMR websocket.
+const DEV_CSP_SOURCES: CspSources = [
   ["script-src 'self'", "'unsafe-inline'"],
   ["connect-src 'self'", 'ws://localhost:*'],
 ];
@@ -15,16 +28,71 @@ const DEV_CSP_SOURCES: [directive: string, source: string][] = [
 const devContentSecurityPolicy: Plugin = {
   name: 'dev-content-security-policy',
   apply: 'serve',
-  transformIndexHtml(html) {
-    for (const [directive, source] of DEV_CSP_SOURCES) {
-      if (!html.includes(directive)) {
-        throw new Error(`index.html Content-Security-Policy is missing "${directive}"`);
-      }
-      html = html.replace(directive, `${directive} ${source}`);
-    }
-    return html;
-  },
+  transformIndexHtml: (html) => addCspSources(html, DEV_CSP_SOURCES),
 };
+
+// The property the MkDocs docs site reports to; keep this in sync with
+// `extra.analytics.property` in doc/mkdocs/mkdocs.yml. The playground is a
+// separate Vite build copied into that site, so the MkDocs tag never reaches it.
+const GA_MEASUREMENT_ID = 'G-ND0YQ5Q2VM';
+
+// The sources Google documents for GA4 under a CSP.
+const GA_CSP_SOURCES: CspSources = [
+  ["script-src 'self'", 'https://*.googletagmanager.com'],
+  ["img-src 'self'", 'https://*.google-analytics.com https://*.googletagmanager.com'],
+  [
+    "connect-src 'self'",
+    'https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com',
+  ],
+];
+
+// Emitted as its own file rather than inlined, so the CSP needs no
+// `script-src 'unsafe-inline'`. gtag.js reads the live `arguments` object off
+// `dataLayer`, so `gtag` cannot take a rest parameter instead.
+const GA_BOOTSTRAP = `window.dataLayer = window.dataLayer || [];
+function gtag() {
+  window.dataLayer.push(arguments);
+}
+gtag('js', new Date());
+Promise.resolve(window.openzlIsolationSettled).then(function () {
+  gtag('config', '${GA_MEASUREMENT_ID}');
+});
+`;
+
+// Production builds only. The dev server's traffic would land in the real
+// property, and a build in any other `--mode` is not the public site: the
+// desktop app builds this page as its renderer with `--mode desktop`.
+function googleAnalytics(): Plugin {
+  let base = '/';
+  return {
+    name: 'google-analytics',
+    apply: (_config, {command, mode}) => command === 'build' && mode === 'production',
+    configResolved(config) {
+      base = config.base;
+    },
+    generateBundle() {
+      this.emitFile({type: 'asset', fileName: 'analytics.js', source: GA_BOOTSTRAP});
+    },
+    // Runs after Vite has processed the page, so these URLs are final as given.
+    transformIndexHtml: (html) => ({
+      html: addCspSources(html, GA_CSP_SOURCES),
+      tags: [
+        {
+          // `crossorigin`, because the page is cross-origin isolated with COEP
+          // `require-corp` (see cross-origin-isolation-sw.js).
+          tag: 'script',
+          attrs: {
+            async: true,
+            crossorigin: 'anonymous',
+            src: `https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`,
+          },
+          injectTo: 'head',
+        },
+        {tag: 'script', attrs: {src: `${base}analytics.js`}, injectTo: 'head'},
+      ],
+    }),
+  };
+}
 
 // Emscripten's output, which only a WASM build produces: the GitHub workflows
 // run one before the docs, but the internal docs build does not. Without it the
@@ -35,7 +103,7 @@ const hasWasmArtifact = existsSync(fileURLToPath(new URL('../../wasm/js/openzl.j
 
 const config = createWebToolConfig({
   base: '/tools/playground',
-  plugins: [devContentSecurityPolicy],
+  plugins: [devContentSecurityPolicy, googleAnalytics()],
   testAlias: [
     {
       find: /^\/OpenZL_logo\.png/,

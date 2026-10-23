@@ -17,11 +17,11 @@
 const COOP = 'same-origin';
 // `require-corp` rather than `credentialless`, which Safari and Firefox for
 // Android do not implement. It blocks any cross-origin subresource that does
-// not send a CORP header. The only ones here are the Google Fonts that
-// `index.css` and web_common's `ToolHeader.css` pull in with a CSS `@import`,
-// which cannot carry `crossorigin`; fonts.googleapis.com and fonts.gstatic.com
-// both send `Cross-Origin-Resource-Policy: cross-origin`, so they still load.
-// A new cross-origin resource without that header will not.
+// not send a CORP header. The only ones here are Google Analytics' gtag.js and
+// its beacons, which the production build adds (see vite.config.ts); both
+// www.googletagmanager.com and google-analytics.com send
+// `Cross-Origin-Resource-Policy: cross-origin`, so they still load. A new
+// cross-origin resource without that header will not.
 const COEP = 'require-corp';
 
 // Statuses whose responses must not carry a body.
