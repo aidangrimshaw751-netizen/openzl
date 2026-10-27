@@ -48,14 +48,23 @@
 /* Surfaces and accents that have no Material equivalent. Text colours use the
  * theme's own variables instead, so they flip with the scheme on their own. */
 .openzl-tools-landing {
-    --openzl-card-bg: #fafafa;
+    --openzl-card-bg: #fff;
     --openzl-card-border: #e2e8f0;
     --openzl-card-shadow: 0 4px 12px rgba(15, 23, 42, 0.02);
-    --openzl-surface-bg: #fff;
-    --openzl-badge-bg: #eff6ff;
-    --openzl-badge-fg: #1e40af;
-    --openzl-track-bg: #f1f5f9;
-    --openzl-track-fill: #1e40af;
+    --openzl-art-bg: #f8fafc;
+    /* The playground's codec colours, from `theme.ts`. */
+    --openzl-series-openzl: #10b981;
+    --openzl-series-zstd: #3b82f6;
+    --openzl-series-gzip: #f97316;
+    --openzl-node-bg: #fff;
+    --openzl-node-border: #cbd5e1;
+    --openzl-node-edge: #94a3b8;
+    --openzl-graph-bg: #dbeafe;
+    --openzl-graph-border: #93c5fd;
+    --openzl-graph-fg: #1e3a8a;
+    --openzl-codec-bg: #fee2e2;
+    --openzl-codec-border: #fca5a5;
+    --openzl-codec-fg: #991b1b;
     --openzl-button-bg: var(--md-primary-fg-color);
     --openzl-button-bg-hover: var(--md-primary-fg-color--dark);
 
@@ -72,11 +81,19 @@
     --openzl-card-bg: var(--md-code-bg-color);
     --openzl-card-border: var(--md-default-fg-color--lightest);
     --openzl-card-shadow: none;
-    --openzl-surface-bg: var(--md-default-bg-color);
-    --openzl-badge-bg: rgba(96, 165, 250, 0.16);
-    --openzl-badge-fg: #93c5fd;
-    --openzl-track-bg: var(--md-default-fg-color--lightest);
-    --openzl-track-fill: #60a5fa;
+    --openzl-art-bg: var(--md-default-bg-color);
+    --openzl-series-openzl: #34d399;
+    --openzl-series-zstd: #60a5fa;
+    --openzl-series-gzip: #fb923c;
+    --openzl-node-bg: var(--md-code-bg-color);
+    --openzl-node-border: var(--md-default-fg-color--lighter);
+    --openzl-node-edge: var(--md-default-fg-color--lighter);
+    --openzl-graph-bg: rgba(96, 165, 250, 0.16);
+    --openzl-graph-border: #60a5fa;
+    --openzl-graph-fg: #bfdbfe;
+    --openzl-codec-bg: rgba(248, 113, 113, 0.16);
+    --openzl-codec-border: #f87171;
+    --openzl-codec-fg: #fecaca;
     /* The brand green is too dark to read against the slate background, so
      * step one shade lighter and let hover fall back to the base shade. */
     --openzl-button-bg: var(--md-primary-fg-color--light);
@@ -104,7 +121,7 @@
 }
 
 .openzl-tools-grid {
-    align-items: start;
+    align-items: stretch;
     display: grid;
     gap: 32px;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -117,12 +134,36 @@
     box-shadow: var(--openzl-card-shadow);
     display: flex;
     flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+.openzl-tool-card__art {
+    align-items: center;
+    background: var(--openzl-art-bg);
+    border-bottom: 1px solid var(--openzl-card-border);
+    display: flex;
+    height: 240px;
+    justify-content: center;
+    padding: 24px 32px;
+}
+
+.openzl-tool-card__art svg {
+    height: 100%;
+    max-width: 100%;
+}
+
+.openzl-tool-card__body {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
     gap: 24px;
     padding: 32px;
 }
 
 .openzl-tool-card__copy {
     display: flex;
+    flex: 1;
     flex-direction: column;
     gap: 12px;
 }
@@ -143,72 +184,87 @@
     margin: 0;
 }
 
-.openzl-benchmark-preview {
-    background: var(--openzl-surface-bg);
-    border: 1px solid var(--openzl-card-border);
-    border-radius: 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    height: 191px;
-    padding: 16px;
+.openzl-chart-art polyline {
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
 }
 
-.openzl-benchmark-preview__label {
-    color: var(--md-default-fg-color--light);
-    font-size: 12px;
-    font-weight: 700;
-    line-height: normal;
-    text-transform: uppercase;
-}
-
-.openzl-benchmark-preview__metric {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.openzl-benchmark-preview__row {
-    align-items: center;
-    display: flex;
-    justify-content: space-between;
-}
-
-.openzl-benchmark-preview__badge {
-    background: var(--openzl-badge-bg);
-    border-radius: 6px;
-    color: var(--openzl-badge-fg);
+.openzl-chart-art text {
     font-family: var(--md-code-font-family);
     font-size: 11px;
     font-weight: 700;
-    line-height: normal;
-    padding: 4px 10px;
 }
 
-.openzl-benchmark-preview__ratio {
-    color: var(--md-default-fg-color);
-    font-family: var(--md-code-font-family);
-    font-size: 12px;
+.openzl-chart-art__openzl {
+    fill: var(--openzl-series-openzl);
+    stroke: var(--openzl-series-openzl);
+}
+
+.openzl-chart-art__zstd {
+    fill: var(--openzl-series-zstd);
+    stroke: var(--openzl-series-zstd);
+}
+
+.openzl-chart-art__gzip {
+    fill: var(--openzl-series-gzip);
+    stroke: var(--openzl-series-gzip);
+}
+
+.openzl-chart-art text,
+.openzl-chart-art circle {
+    stroke: none;
+}
+
+.openzl-trace-art text {
+    text-anchor: middle;
+}
+
+.openzl-trace-art__edge {
+    fill: none;
+    stroke: var(--openzl-node-edge);
+}
+
+.openzl-trace-art__stream {
+    fill: var(--openzl-node-bg);
+    stroke: var(--openzl-node-border);
+}
+
+.openzl-trace-art__title {
+    fill: var(--md-default-fg-color);
+    font-size: 8px;
     font-weight: 700;
-    line-height: normal;
 }
 
-.openzl-benchmark-preview__ratio span {
-    color: var(--md-default-fg-color--light);
+.openzl-trace-art__detail {
+    fill: var(--md-default-fg-color--light);
+    font-size: 7px;
 }
 
-.openzl-benchmark-preview__track {
-    background: var(--openzl-track-bg);
-    border-radius: 4px;
-    height: 8px;
-    overflow: hidden;
+.openzl-trace-art__graph {
+    fill: var(--openzl-graph-bg);
+    stroke: var(--openzl-graph-border);
 }
 
-.openzl-benchmark-preview__track span {
-    background: var(--openzl-track-fill);
-    display: block;
-    height: 100%;
-    width: 41%;
+.openzl-trace-art__codec {
+    fill: var(--openzl-codec-bg);
+    stroke: var(--openzl-codec-border);
+}
+
+.openzl-trace-art__graph-label,
+.openzl-trace-art__codec-label {
+    font-family: var(--md-code-font-family);
+    font-size: 9px;
+    font-weight: 700;
+}
+
+.openzl-trace-art__graph-label {
+    fill: var(--openzl-graph-fg);
+}
+
+.openzl-trace-art__codec-label {
+    fill: var(--openzl-codec-fg);
 }
 
 .openzl-tools-landing .openzl-tool-card__button {
@@ -276,14 +332,13 @@
         font-size: 32px;
     }
 
-    .openzl-tool-card {
-        padding: 24px;
+    .openzl-tool-card__art {
+        height: 180px;
+        padding: 16px;
     }
 
-    .openzl-benchmark-preview__row {
-        align-items: flex-start;
-        flex-direction: column;
-        gap: 8px;
+    .openzl-tool-card__body {
+        padding: 24px;
     }
 }
 
