@@ -1,0 +1,70 @@
+# Builds unsigned installers of the desktop compression playground for Linux,
+# macOS and Windows, and uploads them as workflow artifacts. Fork-only: it is
+# not meant for meta/openzl. Runs on a push to this branch or by hand.
+
+name: desktop-playground-release
+
+on:
+  push:
+    branches: [desktop-playground-release]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    name: Installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 for an older glibc, so the AppImage runs on more distributions.
+          - os: ubuntu-22.04
+            files: release/*.AppImage
+          - os: macos-latest
+            files: release/*.dmg
+          - os: macos-15-intel
+            files: release/*.dmg
+          - os: windows-2025
+            files: release/*Setup*.exe
+    defaults:
+      run:
+        shell: bash
+        working-directory: contrib/desktop_compression_playground
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - run: git config --global core.autocrlf false
+        working-directory: .
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'yarn'
+          cache-dependency-path: |
+            tools/web/yarn.lock
+            contrib/desktop_compression_playground/yarn.lock
+      - name: Version from zl_version.h and the commit
+        id: version
+        run: |
+          v() { sed -n "s/^#define ZL_LIBRARY_VERSION_$1 \([0-9]*\).*/\1/p" ../../include/openzl/zl_version.h; }
+          echo "version=$(v MAJOR).$(v MINOR).$(v PATCH)-dev.${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+      - run: yarn install --frozen-lockfile
+      - run: yarn setup
+      - name: Smoke-test the packaged app
+        run: yarn test:smoke packaged-app
+      - name: Build the installer
+        run: >-
+          yarn electron-builder --publish never -c.mac.identity=null
+          -c.extraMetadata.version=${{ steps.version.outputs.version }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-playground-${{ steps.version.outputs.version }}-${{ matrix.os }}
+          path: contrib/desktop_compression_playground/${{ matrix.files }}
+          if-no-files-found: error
+          compression-level: 0
